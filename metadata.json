@@ -1,0 +1,7 @@
+{
+  "name": "BH Portal",
+  "description": "A modern, AI-powered workplace hub for employee news, time tracking, and productivity tools.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
