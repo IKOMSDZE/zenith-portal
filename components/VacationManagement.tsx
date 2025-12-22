@@ -2,14 +2,15 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Icons } from '../constants';
 import { User, VacationRecord, VacationStatus } from '../types';
-import { SystemSettings } from '../services/database';
+import { Database, SystemSettings } from '../services/database';
 
 interface VacationManagementProps {
   user: User;
   employees: User[];
-  onUpdateEmployees: (newEmployees: User[]) => void;
+  onUpdateEmployees: (newEmployees: User[]) => Promise<void>;
   vacations: VacationRecord[];
-  onUpdateVacations: (newVacations: VacationRecord[]) => void;
+  onSaveVacation: (vacation: VacationRecord) => Promise<void>;
+  onDeleteVacation: (id: string) => Promise<void>;
   settings: SystemSettings;
 }
 
@@ -22,12 +23,12 @@ const VACATION_TYPES = [
 ];
 
 const VacationManagement: React.FC<VacationManagementProps> = ({ 
-  user, employees, onUpdateEmployees, vacations, onUpdateVacations, settings 
+  user, employees, onUpdateEmployees, vacations, onSaveVacation, onDeleteVacation, settings
 }) => {
   const isManagerial = user.role === 'Admin' || user.role === 'HR' || user.role === 'Manager';
   const [activeTab, setActiveTab] = useState<'my' | 'requests'>('my');
+  const [isSyncing, setIsSyncing] = useState(false);
   
-  // Searchable Employee Selector State
   const [searchTerm, setSearchTerm] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [selectedEmpId, setSelectedEmpId] = useState(user.id);
@@ -54,7 +55,7 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
   }, []);
 
   const selectedEmployee = useMemo(() => 
-    employees.find(e => e.id === selectedEmpId) || user, 
+    employees.find(e => (e.uid || e.id) === selectedEmpId) || user, 
     [employees, selectedEmpId, user]
   );
 
@@ -62,6 +63,10 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
     employees.filter(e => e.name.toLowerCase().includes(searchTerm.toLowerCase()) || e.id.toLowerCase().includes(searchTerm.toLowerCase())),
     [employees, searchTerm]
   );
+
+  const isReplacementEnabled = useMemo(() => {
+    return (settings.replacementEnabledDepartments || []).includes(selectedEmployee.department);
+  }, [settings.replacementEnabledDepartments, selectedEmployee.department]);
 
   const userBalance = selectedEmployee.vacationDaysTotal - selectedEmployee.vacationDaysUsed;
   
@@ -71,10 +76,11 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
     return vacationForm.workingDays > userBalance;
   }, [vacationForm.reason, vacationForm.workingDays, userBalance]);
 
-  const handleVacationSubmit = (e: React.FormEvent) => {
+  const handleVacationSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isInsufficient) return;
 
+    setIsSyncing(true);
     const newRec: VacationRecord = { 
       id: Math.random().toString(36).substr(2, 9), 
       employeeId: selectedEmployee.id, 
@@ -84,37 +90,58 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
       workingDays: Number(vacationForm.workingDays), 
       calendarDays: Number(vacationForm.calendarDays), 
       reason: vacationForm.reason, 
-      replacementPerson: vacationForm.replacementPerson,
+      replacementPerson: isReplacementEnabled ? vacationForm.replacementPerson : undefined,
       changer: user.name, 
       manager: vacationForm.managerNote, 
       status: 'Pending' 
     };
 
-    onUpdateVacations([newRec, ...vacations]);
-    setVacationForm({ 
-      startDate: '', 
-      endDate: '', 
-      workingDays: 0, 
-      calendarDays: 0, 
-      reason: 'კუთვნილი შვებულება', 
-      replacementPerson: '',
-      managerNote: '' 
-  });
-    alert("მოთხოვნა წარმატებით გაიგზავნა.");
+    try {
+      await onSaveVacation(newRec);
+      setVacationForm({ 
+        startDate: '', 
+        endDate: '', 
+        workingDays: 0, 
+        calendarDays: 0, 
+        reason: 'კუთვნილი შვებულება', 
+        replacementPerson: '',
+        managerNote: '' 
+      });
+      alert("მოთხოვნა წარმატებით გაიგზავნა და სინქრონიზებულია.");
+    } catch (err) {
+      console.error(err);
+      alert("შეცდომა სინქრონიზაციისას.");
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
-  const updateStatus = (id: string, stat: VacationStatus) => {
+  const updateStatus = async (id: string, stat: VacationStatus) => {
     const v = vacations.find(x => x.id === id);
     if (!v) return;
 
-    if (stat === 'Approved') {
-      const type = VACATION_TYPES.find(r => r.label === v.reason);
-      if (type?.subtracts) {
-        onUpdateEmployees(employees.map(e => e.id === v.employeeId ? { ...e, vacationDaysUsed: e.vacationDaysUsed + v.workingDays } : e));
+    setIsSyncing(true);
+    try {
+      if (stat === 'Approved') {
+        const type = VACATION_TYPES.find(r => r.label === v.reason);
+        if (type?.subtracts) {
+          await onUpdateEmployees(employees.map(e => e.id === v.employeeId ? { ...e, vacationDaysUsed: (e.vacationDaysUsed || 0) + v.workingDays } : e));
+        }
       }
+      
+      const updatedRec = { ...v, status: stat, changer: user.name };
+      await onSaveVacation(updatedRec);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsSyncing(false);
     }
-    
-    onUpdateVacations(vacations.map(x => x.id === id ? { ...x, status: stat, changer: user.name } : x));
+  };
+
+  const handleDelete = async (id: string) => {
+    if (window.confirm("ნამდვილად გსურთ ამ ჩანაწერის წაშლა?")) {
+      await onDeleteVacation(id);
+    }
   };
 
   const printDocument = (v: VacationRecord) => {
@@ -214,7 +241,7 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
 
             <div class="field-row">
               <div class="field-label">თანამდებობა</div>
-              <div class="field-underline value-text">${selectedEmployee.position || '—'}</div>
+              <div class="field-underline value-text">${employees.find(e => e.id === v.employeeId)?.position || '—'}</div>
             </div>
 
             <div class="date-block">
@@ -274,7 +301,6 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
           <script>
             window.onload = function() { 
               window.print(); 
-              // window.close(); // ავტომატური დახურვა ბეჭდვის შემდეგ
             };
           </script>
         </body>
@@ -290,7 +316,10 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-          <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">შვებულების მართვა</h2>
+          <div className="flex items-center gap-3">
+             <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase">შვებულების მართვა</h2>
+             {isSyncing && <div className="w-4 h-4 border-2 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin"></div>}
+          </div>
           <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest">ადმინისტრირება და დოკუმენტაცია</p>
         </div>
         
@@ -381,7 +410,7 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
                                   {filteredEmployees.map(e => (
                                     <div 
                                       key={e.id} 
-                                      onClick={() => { setSelectedEmpId(e.id); setIsSearchOpen(false); setSearchTerm(''); }}
+                                      onClick={() => { setSelectedEmpId(e.uid || e.id); setIsSearchOpen(false); setSearchTerm(''); }}
                                       className="p-3 text-[11px] font-bold hover:bg-indigo-50 cursor-pointer border-b border-slate-50 last:border-0 flex justify-between items-center"
                                     >
                                       <span className="uppercase">{e.name}</span>
@@ -392,20 +421,6 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
                                </div>
                             </div>
                           )}
-                       </div>
-                       <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">პოზიცია</label>
-                            <input type="text" readOnly value={selectedEmployee.position || '—'} className="w-full bg-slate-50 border border-slate-100 p-2.5 rounded-[5px] text-[10px] font-black text-slate-400 outline-none" />
-                          </div>
-                          <div>
-                            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">დეპარტამენტი</label>
-                            <input type="text" readOnly value={selectedEmployee.department} className="w-full bg-slate-50 border border-slate-100 p-2.5 rounded-[5px] text-[10px] font-black text-slate-400 outline-none" />
-                          </div>
-                       </div>
-                       <div>
-                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">სამუშაო ადგილი (ფილიალი)</label>
-                          <input type="text" readOnly value={selectedEmployee.branch || '—'} className="w-full bg-slate-50 border border-slate-100 p-2.5 rounded-[5px] text-xs font-black text-slate-400 outline-none" />
                        </div>
                     </div>
                   </div>
@@ -437,18 +452,17 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
                   </div>
                 </div>
 
-                <div className="space-y-4 pt-4 border-t border-slate-50">
-                   <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                      <div><label className="text-[9px] font-black text-slate-900 uppercase tracking-widest block mb-1">შემცვლელი პირი</label><input type="text" placeholder="სახელი გვარი" value={vacationForm.replacementPerson} onChange={e => setVacationForm({...vacationForm, replacementPerson: e.target.value})} className="w-full border border-slate-200 p-2.5 rounded-[5px] text-xs font-black outline-none" /></div>
-                      <div><label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block mb-1">მენეჯერის კომენტარი</label><input type="text" placeholder="..." value={vacationForm.managerNote} onChange={e => setVacationForm({...vacationForm, managerNote: e.target.value})} className="w-full border border-slate-200 p-2.5 rounded-[5px] text-xs font-black outline-none" /></div>
-                   </div>
-                </div>
-
                 <div className="mt-10 flex flex-col md:flex-row items-center justify-between gap-6">
                    <div className="text-slate-400 text-[10px] font-medium max-w-sm italic leading-tight">
                       {isInsufficient ? <span className="text-rose-500 font-black uppercase flex items-center gap-1"><Icons.Alert /> არასაკმარისი ბალანსი!</span> : "დარწმუნდით მონაცემების სისწორეში. მოთხოვნა გადაეცემა მენეჯერს დასადასტურებლად."}
                    </div>
-                   <button type="submit" disabled={isInsufficient || !vacationForm.startDate || !vacationForm.endDate || !vacationForm.workingDays} className="px-12 py-4 bg-slate-900 text-white rounded-[5px] font-black text-xs uppercase tracking-widest shadow-xl hover:bg-slate-800 transition-all disabled:opacity-50">მოთხოვნის გაგზავნა</button>
+                   <button 
+                    type="submit" 
+                    disabled={isInsufficient || isSyncing || !vacationForm.startDate || !vacationForm.endDate || !vacationForm.workingDays} 
+                    className="px-12 py-4 bg-slate-900 text-white rounded-[5px] font-black text-xs uppercase tracking-widest shadow-xl hover:bg-slate-800 transition-all disabled:opacity-50"
+                  >
+                    {isSyncing ? 'სინქრონიზაცია...' : 'მოთხოვნის გაგზავნა'}
+                  </button>
                 </div>
               </form>
             </div>
@@ -474,23 +488,22 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
                     <td className="px-6 py-4 text-right">
                       {v.status === 'Pending' ? (
                         <div className="flex justify-end gap-2">
-                          <button onClick={() => updateStatus(v.id, 'Approved')} className="w-8 h-8 flex items-center justify-center bg-emerald-50 text-emerald-600 rounded-[5px] hover:bg-emerald-600 hover:text-white transition-all"><Icons.Check /></button>
-                          <button onClick={() => updateStatus(v.id, 'Rejected')} className="w-8 h-8 flex items-center justify-center bg-rose-50 text-rose-600 rounded-[5px] hover:bg-rose-600 hover:text-white transition-all"><Icons.X /></button>
+                          <button onClick={() => updateStatus(v.id, 'Approved')} disabled={isSyncing} className="w-8 h-8 flex items-center justify-center bg-emerald-50 text-emerald-600 rounded-[5px] hover:bg-emerald-600 hover:text-white transition-all disabled:opacity-50"><Icons.Check /></button>
+                          <button onClick={() => updateStatus(v.id, 'Rejected')} disabled={isSyncing} className="w-8 h-8 flex items-center justify-center bg-rose-50 text-rose-600 rounded-[5px] hover:bg-rose-600 hover:text-white transition-all disabled:opacity-50"><Icons.X /></button>
+                          <button onClick={() => handleDelete(v.id)} disabled={isSyncing} className="w-8 h-8 flex items-center justify-center bg-slate-50 text-slate-400 rounded-[5px] hover:bg-rose-600 hover:text-white transition-all disabled:opacity-50"><Icons.Trash /></button>
                         </div>
                       ) : (
                         <div className="flex flex-col items-end gap-1">
-                          <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-[3px] uppercase ${v.status === 'Approved' ? 'text-emerald-500' : 'text-rose-500'}`}>{v.status === 'Approved' ? 'დადასტურდა' : 'უარყოფილა'}</span>
+                          <div className="flex gap-2">
+                            <span className={`text-[8px] font-black px-1.5 py-0.5 rounded-[3px] uppercase ${v.status === 'Approved' ? 'text-emerald-500' : 'text-rose-500'}`}>{v.status === 'Approved' ? 'დადასტურდა' : 'უარყოფილა'}</span>
+                            <button onClick={() => handleDelete(v.id)} className="text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
+                          </div>
                           {v.status === 'Approved' && <button onClick={() => printDocument(v)} className="text-[9px] font-black text-indigo-600 flex items-center gap-1 hover:underline"><Icons.Newspaper /> ბეჭდვა</button>}
                         </div>
                       )}
                     </td>
                   </tr>
                 ))}
-                {vacations.length === 0 && (
-                  <tr>
-                    <td colSpan={5} className="p-20 text-center text-slate-300 italic text-[10px] uppercase tracking-widest">მოთხოვნები არ მოიძებნა</td>
-                  </tr>
-                )}
               </tbody>
             </table>
           </div>

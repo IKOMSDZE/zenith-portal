@@ -17,7 +17,6 @@ export interface AttendanceRecord {
   isLate?: boolean;
 }
 
-// Added 'HR' to the UserRole type to resolve type mismatches in constants and components
 export type UserRole = 'Admin' | 'Manager' | 'Editor' | 'Accountant' | 'Employee' | 'HR';
 
 export type VacationStatus = 'Pending' | 'Approved' | 'Rejected';
@@ -36,10 +35,19 @@ export interface VacationRecord {
   workingDays: number;
   calendarDays: number;
   reason: string;
-  replacementPerson?: string; // Added field
+  replacementPerson?: string;
   changer: string;
   manager: string;
   status: VacationStatus;
+}
+
+export interface NewsItem {
+  id: string;
+  title: string;
+  date: string;
+  content: string;
+  type: 'Success' | 'Alert' | 'Info';
+  author?: string;
 }
 
 export interface CashDeskRecord {
@@ -60,17 +68,9 @@ export interface CashDeskRecord {
   };
 }
 
-export interface NewsItem {
-  id: string;
-  title: string;
-  content: string;
-  date: string;
-  author: string;
-  category: 'Urgent' | 'Events' | 'News' | string;
-}
-
 export interface User {
   id: string;
+  uid?: string; // Firebase Auth UID
   name: string;
   role: UserRole;
   department: string;
@@ -86,9 +86,10 @@ export interface User {
   jobStartDate?: string;
   position?: string;
   phoneNumber?: string;
-  email?: string; // Added email field
+  email?: string;
   personalId?: string;
   address?: string;
+  password?: string;
 }
 
 export enum View {
@@ -101,5 +102,5 @@ export enum View {
   COMPANY_STRUCTURE = 'company_structure',
   ATTENDANCE_REPORT = 'attendance_report',
   ACCOUNTANT = 'accountant',
-  USERS = 'users' // Added USERS view
+  USERS = 'users'
 }

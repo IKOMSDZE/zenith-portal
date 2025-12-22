@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import Sidebar from './components/Sidebar';
-import AttendanceTracker from './components/AttendanceTracker';
+import Header from './components/Header';
 import AttendanceReportModule from './components/AttendanceReportModule';
 import AdminPanel from './components/AdminPanel';
 import VacationManagement from './components/VacationManagement';
@@ -10,129 +10,207 @@ import CompanyStructureModule from './components/CompanyStructureModule';
 import AccountantModule from './components/AccountantModule';
 import UsersModule from './components/UsersModule';
 import ProfileModule from './components/ProfileModule';
-import NewsFeed from './components/NewsFeed';
-import { View, User, BranchConfig, VacationRecord, AttendanceRecord, PositionMapping, NewsItem } from './types';
-import { Icons } from './constants';
+import Dashboard from './components/Dashboard';
+import BranchSelectorPopup from './components/BranchSelectorPopup';
+import LoginPage from './components/LoginPage';
+import AIChat from './components/AIChat';
+import { View, User, BranchConfig, VacationRecord, AttendanceRecord, PositionMapping, CashDeskRecord, NewsItem } from './types';
+import { Icons, MOCK_USER } from './constants';
 import { Database, SystemSettings } from './services/database';
 import { SMSService } from './services/smsService';
+import { AuthService } from './services/authService';
+import { MigrationService } from './services/migrationService';
 
 const App: React.FC = () => {
-  const [loading, setLoading] = useState(true);
   const [settings, setSettings] = useState<SystemSettings | null>(null);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [showBranchPopup, setShowBranchPopup] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const sentTodayRef = useRef<Set<string>>(new Set());
+
   const [activeView, setActiveView] = useState<View>(View.DASHBOARD);
-  const [user, setUser] = useState<User>(Database.getCurrentUser());
+  const [user, setUser] = useState<User>(MOCK_USER);
   const [employees, setEmployees] = useState<User[]>([]);
   const [branches, setBranches] = useState<BranchConfig[]>([]);
   const [vacations, setVacations] = useState<VacationRecord[]>([]);
   const [attendanceLogs, setAttendanceLogs] = useState<AttendanceRecord[]>([]);
+  const [cashHistory, setCashHistory] = useState<CashDeskRecord[]>([]);
   const [positions, setPositions] = useState<PositionMapping[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
   const [news, setNews] = useState<NewsItem[]>([]);
-  const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
 
-  // Initialize Data from Firebase
+  // Auth & Global Init
   useEffect(() => {
-    const loadAllData = async () => {
-      setLoading(true);
-      try {
+    const unsub = AuthService.onAuthStateChanged(async (firebaseUser) => {
+      if (firebaseUser && firebaseUser.email) {
+        setIsLoading(true);
         await Database.init();
-        const [
-          dbSettings,
-          dbEmployees,
-          dbBranches,
-          dbVacations,
-          dbAttendance,
-          dbPositions,
-          dbDepartments,
-          dbNews
-        ] = await Promise.all([
-          Database.getSettings(),
-          Database.getEmployees(),
-          Database.getBranches(),
-          Database.getVacations(),
-          Database.getAttendanceLogs(),
-          Database.getPositions(),
-          Database.getDepartments(),
-          Database.getNews()
-        ]);
+        
+        // 1. Sync / Migrate Profile
+        const profile = await Database.syncUserWithAuth(firebaseUser.uid, firebaseUser.email);
+        
+        if (profile) {
+          setUser(profile);
+          await Database.setCurrentUser(profile);
+          setIsAuthenticated(true);
 
-        setSettings(dbSettings);
-        setEmployees(dbEmployees);
-        setBranches(dbBranches);
-        setVacations(dbVacations);
-        setAttendanceLogs(dbAttendance);
-        setPositions(dbPositions);
-        setDepartments(dbDepartments);
-        setNews(dbNews);
+          // 2. Perform background migration of any existing local data (localStorage)
+          setIsMigrating(true);
+          try {
+            await MigrationService.migrateLocalData(firebaseUser.uid);
+          } catch (e) {
+            console.error("Migration failed during session init", e);
+          } finally {
+            setIsMigrating(false);
+          }
+          
+          // 3. Initial Data Fetching from Firebase
+          const [
+            fetchedSettings,
+            fetchedEmployees,
+            fetchedBranches,
+            fetchedVacations,
+            fetchedAttendance,
+            fetchedCash,
+            fetchedPositions,
+            fetchedDepts,
+            fetchedNews
+          ] = await Promise.all([
+            Database.getSettings(),
+            Database.getEmployees(),
+            Database.getBranches(),
+            Database.getVacations(),
+            Database.getAttendanceLogs(),
+            Database.getCashHistory(),
+            Database.getPositions(),
+            Database.getDepartments(),
+            Database.getNews()
+          ]);
 
-        // Sync local current user state with DB record
-        const me = dbEmployees.find(e => e.id === user.id);
-        if (me) setUser(me);
-      } catch (err) {
-        console.error("Failed to load data from Firebase", err);
-      } finally {
-        setLoading(false);
+          setSettings(fetchedSettings);
+          setEmployees(fetchedEmployees);
+          setBranches(fetchedBranches);
+          setVacations(fetchedVacations);
+          setAttendanceLogs(fetchedAttendance);
+          setCashHistory(fetchedCash);
+          setPositions(fetchedPositions);
+          setDepartments(fetchedDepts);
+          setNews(fetchedNews);
+
+          // Handle Branch Selector Logic
+          const branchSelectorEnabled = (fetchedSettings.branchSelectorEnabledDepartments || []).includes(profile.department);
+          const today = new Date().toISOString().split('T')[0];
+          const lastPopDate = localStorage.getItem('zenith_last_branch_pop_date');
+
+          if (branchSelectorEnabled && lastPopDate !== today) {
+            setShowBranchPopup(true);
+          }
+        } else {
+          // Profile not found despite successful auth
+          AuthService.logout();
+        }
+        setIsLoading(false);
+      } else {
+        setIsAuthenticated(false);
+        // Still need settings for login page logo/title if possible
+        const fetchedSettings = await Database.getSettings();
+        setSettings(fetchedSettings);
+        setIsLoading(false);
       }
-    };
+    });
 
-    loadAllData();
+    return () => unsub();
+  }, []);
 
+  // Settings update listener
+  useEffect(() => {
     const handleSettingsUpdate = (e: any) => setSettings(e.detail);
     window.addEventListener('settingsUpdated', handleSettingsUpdate);
     return () => window.removeEventListener('settingsUpdated', handleSettingsUpdate);
   }, []);
 
-  // Global Branding Injection
+  // Application Title and Favicon Injection
+  useEffect(() => {
+    if (!settings) return;
+    document.title = settings.appTitle || 'Zenith Portal';
+    
+    let favicon = document.querySelector('link[rel="icon"]') as HTMLLinkElement;
+    if (!favicon) {
+      favicon = document.createElement('link');
+      favicon.rel = 'icon';
+      document.head.appendChild(favicon);
+    }
+    if (settings.faviconUrl) {
+      favicon.href = settings.faviconUrl;
+    }
+  }, [settings?.appTitle, settings?.faviconUrl]);
+
+  // Birthday Automation
+  useEffect(() => {
+    if (!isAuthenticated || !settings) return;
+
+    const checkBirthdays = async () => {
+      const now = new Date();
+      const currentHoursMinutes = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+      
+      if (currentHoursMinutes === '00:00') {
+        sentTodayRef.current.clear();
+      }
+
+      if (currentHoursMinutes === (settings.birthdaySmsTime || '09:00')) {
+        const todayMonth = now.getMonth() + 1;
+        const todayDay = now.getDate();
+        
+        for (const emp of employees) {
+          if (emp.birthday && !sentTodayRef.current.has(emp.id)) {
+            const [bYear, bMonth, bDay] = emp.birthday.split('-').map(Number);
+            if (todayMonth === bMonth && todayDay === bDay) {
+              sentTodayRef.current.add(emp.id);
+              try {
+                await SMSService.sendBirthdayAlerts(emp.name, emp.phoneNumber || '');
+              } catch (e) {
+                console.error("[Automation] Failed to send birthday SMS", e);
+              }
+            }
+          }
+        }
+      }
+    };
+
+    const interval = setInterval(checkBirthdays, 60000);
+    return () => clearInterval(interval);
+  }, [settings?.birthdaySmsTime, isAuthenticated, employees]);
+
+  // Branding Injection (Fonts)
   useEffect(() => {
     if (!settings) return;
     const styleId = 'zenith-custom-branding-style';
     let styleTag = document.getElementById(styleId) as HTMLStyleElement;
-
     if (settings.headerFont || settings.bodyFont) {
       if (!styleTag) {
         styleTag = document.createElement('style');
         styleTag.id = styleId;
         document.head.appendChild(styleTag);
       }
-      
       let css = '';
-      if (settings.headerFont) {
-        css += `
-          @font-face {
-            font-family: 'HeaderFont';
-            src: url('${settings.headerFont.data}') format('${settings.headerFont.format}');
-            font-weight: bold;
-          }
-          h1, h2, h3, h4, h5, h6, .font-black, .font-bold, button, label, th, .uppercase {
-            font-family: 'HeaderFont', sans-serif !important;
-          }
-        `;
-      }
-      if (settings.bodyFont) {
-        css += `
-          @font-face {
-            font-family: 'BodyFont';
-            src: url('${settings.bodyFont.data}') format('${settings.bodyFont.format}');
-          }
-          body, p, span, td, input, textarea, select {
-            font-family: 'BodyFont', sans-serif !important;
-          }
-        `;
-      }
+      if (settings.headerFont) css += `@font-face { font-family: 'HeaderFont'; src: url('${settings.headerFont.data}') format('${settings.headerFont.format}'); font-weight: bold; } h1, h2, h3, h4, h5, h6, .font-black, .font-bold, button, label, th, .uppercase { font-family: 'HeaderFont', sans-serif !important; }`;
+      if (settings.bodyFont) css += `@font-face { font-family: 'BodyFont'; src: url('${settings.bodyFont.data}') format('${settings.bodyFont.format}'); font-weight: normal; } body, p, span, td, input, textarea, select { font-family: 'BodyFont', sans-serif !important; }`;
       styleTag.innerHTML = css;
-    }
-  }, [settings]);
+    } else if (styleTag) styleTag.remove();
+  }, [settings?.headerFont, settings?.bodyFont]);
 
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
-        setIsProfileMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+  const handleLogin = (authenticatedUser: User) => {
+    setUser(authenticatedUser);
+    setIsAuthenticated(true);
+    setActiveView(View.DASHBOARD);
+  };
+
+  const handleLogout = async () => {
+    await AuthService.logout();
+    localStorage.removeItem('zenith_current_user');
+    setIsAuthenticated(false);
+  };
 
   const updateUserInfo = async (updates: Partial<User>) => {
     const updatedUser = { ...user, ...updates };
@@ -143,179 +221,216 @@ const App: React.FC = () => {
   };
 
   const handleUpdateEmployees = async (newEmployees: User[]) => {
-    await Database.setEmployees(newEmployees);
     setEmployees(newEmployees);
-    const me = newEmployees.find(e => e.id === user.id);
-    if (me) setUser(me);
+    await Database.setEmployees(newEmployees);
+    const curr = newEmployees.find(e => (e.uid && e.uid === user.uid) || e.id === user.id);
+    if (curr) setUser(curr);
   };
 
-  const handleUpdateVacations = async (newVacations: VacationRecord[]) => {
-    await Database.setVacations(newVacations);
-    setVacations(newVacations);
+  const handleDeleteUser = async (id: string) => {
+    await Database.deleteUser(id);
+    setEmployees(employees.filter(e => (e.uid || e.id) !== id));
   };
 
-  const handleUpdateBranches = async (newBranches: BranchConfig[]) => {
-    await Database.setBranches(newBranches);
-    setBranches(newBranches);
-  };
-
-  const handleUpdatePositions = async (newPositions: PositionMapping[]) => {
-    await Database.setPositions(newPositions);
-    setPositions(newPositions);
-  };
-
-  const handleUpdateDepartments = async (newDepts: string[]) => {
-    await Database.setDepartments(newDepts);
-    setDepartments(newDepts);
-  };
-
-  const handleUpdateSettings = async (newSettings: SystemSettings) => {
-    await Database.setSettings(newSettings);
-    setSettings(newSettings);
-  };
-
-  const handleNewAttendance = async (log: AttendanceRecord) => {
+  const handleUpdateAttendance = async (log: AttendanceRecord) => {
     await Database.saveAttendanceLog(log);
     const updated = await Database.getAttendanceLogs();
     setAttendanceLogs(updated);
   };
 
-  const handleUpdateAttendance = async (log: AttendanceRecord) => {
-    await Database.updateAttendanceLog(log);
-    const updated = await Database.getAttendanceLogs();
-    setAttendanceLogs(updated);
+  const handleDeleteAttendance = async (id: string) => {
+    await Database.deleteAttendanceLog(id);
+    setAttendanceLogs(attendanceLogs.filter(l => l.id !== id));
   };
 
-  const handleBirthdayChange = async (newDate: string) => {
-    const oldPhone = user.phoneNumber;
-    await updateUserInfo({ birthday: newDate, lastBirthdayUpdate: new Date().toISOString() });
-    if (oldPhone) await SMSService.sendBirthdayUpdateNotification(user.name, oldPhone, newDate);
+  const handleUpdateBranches = async (newBranches: BranchConfig[]) => {
+    setBranches(newBranches);
+    await Database.setBranches(newBranches);
+  };
+
+  const handleDeleteBranch = async (name: string) => {
+    await Database.deleteBranch(name);
+    setBranches(branches.filter(b => b.name !== name));
+  };
+
+  const handleUpdatePositions = async (newPositions: PositionMapping[]) => {
+    setPositions(newPositions);
+    await Database.setPositions(newPositions);
+  };
+
+  const handleDeletePosition = async (title: string) => {
+    await Database.deletePosition(title);
+    setPositions(positions.filter(p => p.title !== title));
+  };
+
+  const handleUpdateDepartments = async (newDepts: string[]) => {
+    setDepartments(newDepts);
+    await Database.setDepartments(newDepts);
+  };
+
+  const handleUpdateSettings = async (newSettings: SystemSettings) => {
+    setSettings(newSettings);
+    await Database.setSettings(newSettings);
+  };
+
+  const handleSaveVacation = async (vacation: VacationRecord) => {
+    await Database.saveVacation(vacation);
+    const updated = await Database.getVacations();
+    setVacations(updated);
+  };
+
+  const handleDeleteVacation = async (id: string) => {
+    await Database.deleteVacation(id);
+    setVacations(vacations.filter(v => v.id !== id));
+  };
+
+  const handleSaveCashRecord = async (record: CashDeskRecord) => {
+    await Database.saveCashRecord(record);
+    const updated = await Database.getCashHistory();
+    setCashHistory(updated);
+  };
+
+  const handleDeleteCashRecord = async (id: string) => {
+    await Database.deleteCashRecord(id);
+    setCashHistory(cashHistory.filter(c => c.id !== id));
+  };
+
+  const handleSaveNews = async (newsItem: NewsItem) => {
+    await Database.saveNews(newsItem);
+    const updated = await Database.getNews();
+    setNews(updated);
+  };
+
+  const handleDeleteNews = async (id: string) => {
+    await Database.deleteNews(id);
+    setNews(news.filter(n => n.id !== id));
   };
 
   const isModuleAllowed = (view: View) => {
     if (!settings) return false;
-    const allowed = settings.rolePermissions[user.role] || [];
-    return allowed.includes(view);
+    return (settings.rolePermissions[user.role] || []).includes(view);
+  }
+  const isAttendanceEnabledForUser = useMemo(() => settings?.attendanceEnabledDepartments?.includes(user.department), [settings, user.department]);
+
+  const handleBirthdayChange = async (newDate: string) => {
+    if (!canEditBirthday) { alert("დაბადების თარიღის შეცვლა შესაძლებელია წელიწადში ერთხელ."); return; }
+    const old = user.phoneNumber;
+    await updateUserInfo({ birthday: newDate, lastBirthdayUpdate: new Date().toISOString() });
+    if (old) await SMSService.sendBirthdayUpdateNotification(user.name, old, newDate);
   };
 
-  if (loading || !settings) {
-    return (
-      <div className="h-screen w-full flex items-center justify-center bg-slate-900">
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
-          <p className="text-white font-black text-xs uppercase tracking-widest">BH Portal Migration...</p>
-        </div>
-      </div>
-    );
-  }
+  const canEditBirthday = useMemo(() => {
+    if (user.role === 'Admin') return true;
+    if (!user.lastBirthdayUpdate) return true;
+    const last = new Date(user.lastBirthdayUpdate);
+    const now = new Date();
+    return last.getFullYear() < now.getFullYear();
+  }, [user.lastBirthdayUpdate, user.role]);
+
+  const handleBranchSelect = async (branchName: string) => {
+    await updateUserInfo({ branch: branchName });
+    const today = new Date().toISOString().split('T')[0];
+    localStorage.setItem('zenith_last_branch_pop_date', today);
+    setShowBranchPopup(false);
+  };
 
   const renderContent = () => {
     if (!isModuleAllowed(activeView)) {
       return (
-        <div className="flex flex-col items-center justify-center py-20 text-center">
+        <div className="flex flex-col items-center justify-center py-20 text-center animate-in fade-in duration-500">
            <div className="w-16 h-16 bg-rose-50 text-rose-500 rounded-full flex items-center justify-center mb-4"><Icons.Alert /></div>
            <h3 className="text-xl font-black text-slate-900 uppercase">წვდომა შეზღუდულია</h3>
-           <button onClick={() => setActiveView(View.DASHBOARD)} className="mt-6 px-6 py-2 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase">მთავარზე დაბრუნება</button>
+           <button onClick={() => setActiveView(View.DASHBOARD)} className="mt-6 px-6 py-2 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest">მთავარზე დაბრუნება</button>
         </div>
       );
     }
 
+    if (!settings) return null;
+
     switch (activeView) {
       case View.DASHBOARD:
         return (
-          <div className="space-y-6 animate-in fade-in duration-500">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              <div onClick={() => isModuleAllowed(View.VACATIONS) && setActiveView(View.VACATIONS)} className="bg-indigo-600 rounded-[5px] p-5 text-white shadow-xl cursor-pointer h-36 flex flex-col justify-between">
-                <div>
-                  <p className="text-indigo-100 text-[10px] font-black uppercase tracking-widest mb-1">შვებულების ბალანსი</p>
-                  <h4 className="text-3xl font-black">{user.vacationDaysTotal - user.vacationDaysUsed} <span className="text-sm font-medium opacity-60">დღე</span></h4>
-                </div>
-                <div className="w-full bg-white/20 rounded-[5px] h-1.5 overflow-hidden">
-                  <div className="bg-white h-full transition-all duration-1000" style={{ width: `${((user.vacationDaysTotal - user.vacationDaysUsed) / user.vacationDaysTotal) * 100}%` }}></div>
-                </div>
-              </div>
-              <div className="bg-white rounded-[5px] p-5 border border-slate-200 shadow-sm flex flex-col justify-between h-36">
-                <div><p className="text-slate-400 text-[10px] font-black uppercase tracking-widest mb-1">დეპარტამენტი</p><h4 className="text-xl font-black text-slate-800 uppercase tracking-tight">{user.department}</h4></div>
-                <div className="flex items-center justify-between border-t border-slate-50 pt-2"><span className="text-slate-400 text-[9px] font-bold uppercase tracking-widest">პოზიცია</span><span className="font-bold text-slate-800 text-xs">{user.position}</span></div>
-              </div>
-              <div className="bg-slate-900 rounded-[5px] p-5 text-white shadow-xl flex flex-col justify-between h-36">
-                <div className="flex items-center space-x-2 text-indigo-400 font-black text-[10px] uppercase tracking-widest"><Icons.Clock /><span>სტატუსი</span></div>
-                <p className="text-slate-300 font-medium text-xs italic">{user.checkedIn ? `ცვლა დაწყებულია: ${user.lastCheckIn}` : "ცვლა არ არის დაწყებული"}</p>
-              </div>
-            </div>
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-               <div className="lg:col-span-7 space-y-6">
-                 {isModuleAllowed(View.ATTENDANCE) && (
-                    <AttendanceTracker 
-                      user={user} 
-                      onUpdateUser={updateUserInfo} 
-                      onAddRecord={handleNewAttendance} 
-                      onUpdateRecord={handleUpdateAttendance}
-                      attendanceLogs={attendanceLogs.filter(l => l.employeeId === user.id)} 
-                      branches={branches} 
-                    />
-                 )}
-                 <NewsFeed news={news} />
-               </div>
-               <div className="lg:col-span-5 space-y-6">
-                  <div className="bg-white p-6 rounded-[5px] border border-slate-200 shadow-sm">
-                    <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-4">კომპანიის ფაილები</h3>
-                    <div className="space-y-2">
-                       {['შინაგანაწესი.pdf', 'ბრენდბუქი_2024.pdf'].map(file => (
-                          <div key={file} className="flex items-center justify-between p-3 border border-slate-50 rounded-[5px] hover:bg-slate-50 cursor-pointer group">
-                             <span className="text-[11px] font-bold text-slate-700">{file}</span>
-                             <Icons.Newspaper />
-                          </div>
-                       ))}
-                    </div>
-                  </div>
-               </div>
-            </div>
-          </div>
+          <Dashboard 
+            user={user} 
+            employees={employees}
+            news={news}
+            onUpdateUser={updateUserInfo} 
+            onAddRecord={handleUpdateAttendance}
+            isAttendanceEnabled={!!isAttendanceEnabledForUser}
+            branches={branches}
+            setActiveView={setActiveView}
+            attendanceLogs={attendanceLogs}
+          />
         );
-      case View.ATTENDANCE: return <AttendanceTracker user={user} onUpdateUser={updateUserInfo} onAddRecord={handleNewAttendance} onUpdateRecord={handleUpdateAttendance} attendanceLogs={attendanceLogs.filter(l => l.employeeId === user.id)} branches={branches} />;
-      case View.ATTENDANCE_REPORT: return <AttendanceReportModule branches={branches} attendanceLogs={attendanceLogs} />;
-      case View.USERS: return <UsersModule employees={employees} onUpdateEmployees={handleUpdateEmployees} positions={positions} />;
-      case View.ACCOUNTANT: return <AccountantModule branches={branches} />;
-      case View.CASHIER: return <CashierModule user={user} />;
-      case View.COMPANY_STRUCTURE: return <CompanyStructureModule branches={branches} onUpdateBranches={handleUpdateBranches} positions={positions} onUpdatePositions={handleUpdatePositions} departments={departments} onUpdateDepartments={handleUpdateDepartments} />;
-      case View.VACATIONS: return <VacationManagement user={user} employees={employees} onUpdateEmployees={handleUpdateEmployees} vacations={vacations} onUpdateVacations={handleUpdateVacations} settings={settings} />;
-      case View.PROFILE: return <ProfileModule user={user} onUpdateUser={updateUserInfo} settings={settings!} canEditBirthday={true} onBirthdayChange={handleBirthdayChange} />;
-      case View.ADMIN: return <AdminPanel user={user} settings={settings!} onUpdateSettings={handleUpdateSettings} employees={employees} onUpdateEmployees={handleUpdateEmployees} />;
+      case View.ATTENDANCE_REPORT: return <AttendanceReportModule branches={branches} user={user} onDeleteAttendance={handleDeleteAttendance} onUpdateAttendance={handleUpdateAttendance} />;
+      case View.USERS: return <UsersModule employees={employees} onUpdateEmployees={handleUpdateEmployees} onDeleteUser={handleDeleteUser} positions={positions} />;
+      case View.ACCOUNTANT: return <AccountantModule branches={branches} cashHistory={cashHistory} onUpdateCashHistory={async (h) => { await Database.saveCashRecord(h[0]); const updated = await Database.getCashHistory(); setCashHistory(updated); }} onDeleteCashRecord={handleDeleteCashRecord} />;
+      case View.CASHIER: return <CashierModule user={user} onUpdateCashHistory={handleSaveCashRecord} />;
+      case View.COMPANY_STRUCTURE: return <CompanyStructureModule branches={branches} onUpdateBranches={handleUpdateBranches} onDeleteBranch={handleDeleteBranch} positions={positions} onUpdatePositions={handleUpdatePositions} onDeletePosition={handleDeletePosition} departments={departments} onUpdateDepartments={handleUpdateDepartments} settings={settings} onUpdateSettings={handleUpdateSettings} />;
+      case View.VACATIONS: return < VacationManagement user={user} employees={employees} onUpdateEmployees={handleUpdateEmployees} vacations={vacations} onSaveVacation={handleSaveVacation} onDeleteVacation={handleDeleteVacation} settings={settings} />;
+      case View.PROFILE: return <ProfileModule user={user} onUpdateUser={updateUserInfo} settings={settings} canEditBirthday={canEditBirthday} onBirthdayChange={handleBirthdayChange} />;
+      case View.ADMIN: return <AdminPanel user={user} settings={settings} onUpdateSettings={handleUpdateSettings} employees={employees} onUpdateEmployees={handleUpdateEmployees} news={news} onSaveNews={handleSaveNews} onDeleteNews={handleDeleteNews} />;
       default: return null;
     }
   };
 
+  if (isLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center space-y-6">
+        <div className="w-16 h-16 bg-indigo-600 rounded-[5px] animate-bounce flex items-center justify-center text-white text-2xl font-black">Z</div>
+        <p className="text-[10px] font-black text-white uppercase tracking-[0.4em] animate-pulse">იტვირთება მონაცემები...</p>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || !settings) {
+    return <LoginPage onLogin={handleLogin} logoUrl={settings?.logoUrl} appTitle={settings?.appTitle} />;
+  }
+
   return (
-    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden">
-      <Sidebar activeView={activeView} setView={setActiveView} user={user} logoUrl={settings.logoUrl} settings={settings} />
+    <div className="flex h-screen bg-slate-50 text-slate-900 overflow-hidden relative">
+      <Sidebar 
+        activeView={activeView} 
+        setView={setActiveView} 
+        user={user} 
+        logoUrl={settings.logoUrl} 
+        settings={settings}
+      />
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
-        <header className="h-16 bg-white border-b border-slate-100 flex items-center justify-between px-8 z-30 shadow-sm">
-          <div className="lg:hidden flex items-center gap-2">
-            {settings.logoUrl ? <img src={settings.logoUrl} className="h-8" /> : <div className="w-8 h-8 bg-indigo-600 rounded text-white flex items-center justify-center font-black">Z</div>}
-          </div>
-          <div className="hidden lg:block font-black text-[10px] text-slate-400 uppercase tracking-widest">BH Cloud Portal</div>
-          <div className="flex items-center space-x-6" ref={menuRef}>
-            <div className="flex items-center gap-3 cursor-pointer" onClick={() => setIsProfileMenuOpen(!isProfileMenuOpen)}>
-               <div className="text-right hidden sm:block">
-                  <p className="text-xs font-black uppercase text-slate-900">{user.name}</p>
-                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-wider">{user.role}</p>
-               </div>
-               <img src={user.avatar} className="w-9 h-9 rounded-[5px] object-cover border border-slate-200" />
-            </div>
-            {isProfileMenuOpen && (
-              <div className="absolute top-14 right-8 w-64 bg-white rounded shadow-2xl border border-slate-100 p-4 z-50">
-                <button onClick={() => setActiveView(View.PROFILE)} className="w-full text-left p-2 hover:bg-slate-50 text-[10px] font-black uppercase">პროფილი</button>
-                <div className="h-[1px] bg-slate-100 my-2"></div>
-                <button className="w-full text-left p-2 hover:bg-rose-50 text-rose-500 text-[10px] font-black uppercase">გამოსვლა</button>
+        <Header 
+          user={user}
+          settings={settings}
+          activeView={activeView}
+          isAttendanceEnabledForUser={!!isAttendanceEnabledForUser}
+          branches={branches}
+          updateUserInfo={updateUserInfo}
+          setActiveView={setActiveView}
+          onLogout={handleLogout}
+        />
+        <div className="flex-1 overflow-y-auto px-8 py-8 custom-scrollbar">
+          <div className="max-w-7xl mx-auto">
+            {isMigrating && (
+              <div className="mb-6 p-4 bg-indigo-50 border border-indigo-100 rounded-[5px] flex items-center gap-3 animate-pulse">
+                <div className="w-2 h-2 bg-indigo-600 rounded-full"></div>
+                <p className="text-[10px] font-black text-indigo-700 uppercase tracking-widest">მიმდინარეობს მონაცემების სინქრონიზაცია ღრუბელთან...</p>
               </div>
             )}
+            {renderContent()}
           </div>
-        </header>
-        <div className="flex-1 overflow-y-auto px-8 py-8 custom-scrollbar">
-          <div className="max-w-6xl mx-auto">{renderContent()}</div>
         </div>
       </main>
+
+      <AIChat />
+
+      {/* Branch Selector Popup Module */}
+      {showBranchPopup && (
+        <BranchSelectorPopup 
+          user={user} 
+          branches={branches} 
+          onSelect={handleBranchSelect} 
+          logoUrl={settings.logoUrl} 
+        />
+      )}
     </div>
   );
 };

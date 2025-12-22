@@ -1,18 +1,27 @@
 
-import React, { useState, useMemo, useRef } from 'react';
-import { User, UserRole, PositionMapping } from '../types';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
+import { User, UserRole, PositionMapping, View } from '../types';
 import { Icons } from '../constants';
 import { Database } from '../services/database';
 
 interface UsersModuleProps {
   employees: User[];
-  onUpdateEmployees: (newEmployees: User[]) => void;
+  onUpdateEmployees: (newEmployees: User[]) => Promise<void>;
+  onDeleteUser: (id: string) => Promise<void>;
   positions: PositionMapping[];
 }
 
 const ROLES: UserRole[] = ['Admin', 'Manager', 'Editor', 'Accountant', 'Employee', 'HR'];
 
-const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees, positions }) => {
+const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees, onDeleteUser, positions }) => {
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    Database.getCurrentUser().then(setCurrentUser);
+  }, []);
+
+  const isAdmin = currentUser?.role === 'Admin';
+  
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Partial<User> | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
@@ -64,7 +73,7 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
     }
   };
 
-  const handleSave = () => {
+  const handleSave = async () => {
     if (!editingEmployee?.name || !editingEmployee?.id) {
       alert("გთხოვთ შეავსოთ სავალდებულო ველები (სახელი, ID)");
       return;
@@ -78,24 +87,23 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
       updatedList = [...employees, newUser];
     }
 
-    onUpdateEmployees(updatedList);
+    await onUpdateEmployees(updatedList);
     setIsModalOpen(false);
     setEditingEmployee(null);
   };
 
-  const handleDelete = (id: string, role: string) => {
-    if (role === 'Admin') {
-      alert("ადმინის წაშლა აკრძალულია!");
+  const handleDelete = async (id: string, role: string) => {
+    if (role === 'Admin' && id === currentUser?.id) {
+      alert("საკუთარი თავის წაშლა აკრძალულია!");
       return;
     }
     if (window.confirm("ნამდვილად გსურთ მომხმარებლის წაშლა?")) {
-      const updatedList = employees.filter(e => e.id !== id);
-      onUpdateEmployees(updatedList);
+      await onDeleteUser(id);
     }
   };
 
   const handleExport = () => {
-    const headers = ["ID", "სახელი", "როლი", "დეპარტამენტი", "პოზიცია", "პირადი ნომერი", "ტელეფონი", "ელფოსტა", "მისამართი", "დაბადების თარიღი", "მუშაობის დაწყება"];
+    const headers = ["ID", "სახელი", "როლი", "დეპარტამენტი", "პოზიცია", "პირადი ნომერი", "ტელეფონი", "ელფოსტა", "მისამართი", "დაბადების თარიღი", "მუშაობის დაწყება", "შვებულება სულ", "შვებულება გამოყენებული"];
     const csvRows = filteredEmployees.map(e => [
       e.id,
       e.name,
@@ -107,7 +115,9 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
       e.email || "",
       e.address || "",
       e.birthday || "",
-      e.jobStartDate || ""
+      e.jobStartDate || "",
+      e.vacationDaysTotal,
+      e.vacationDaysUsed
     ].join(","));
 
     const csvContent = [headers.join(","), ...csvRows].join("\n");
@@ -119,14 +129,14 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
     link.click();
   };
 
-  const handleImport = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleImport = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const text = event.target?.result as string;
-      const rows = text.split("\n").slice(1); // skip headers
+      const rows = text.split("\n").slice(1);
       const newEmployees: User[] = rows.filter(row => row.trim()).map(row => {
         const cols = row.split(",");
         return {
@@ -141,15 +151,15 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
           address: cols[8],
           birthday: cols[9],
           jobStartDate: cols[10],
+          vacationDaysTotal: parseInt(cols[11]) || 24,
+          vacationDaysUsed: parseInt(cols[12]) || 0,
           avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=facearea&facepad=2&w=256&h=256&q=80',
-          checkedIn: false,
-          vacationDaysTotal: 24,
-          vacationDaysUsed: 0
+          checkedIn: false
         };
       });
 
       if (newEmployees.length > 0) {
-        onUpdateEmployees([...employees, ...newEmployees]);
+        await onUpdateEmployees([...employees, ...newEmployees]);
         alert(`${newEmployees.length} თანამშრომელი იმპორტირებულია.`);
       }
     };
@@ -168,32 +178,32 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
             <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest mt-1">პერსონალის სრული ბაზა და მართვა</p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-3">
           <button 
             onClick={() => importRef.current?.click()}
-            className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-2"
+            className="px-5 py-2.5 bg-white border border-slate-200 text-slate-700 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-2"
           >
             <Icons.Admin /> იმპორტი
           </button>
           <input type="file" ref={importRef} className="hidden" accept=".csv" onChange={handleImport} />
           <button 
             onClick={handleExport}
-            className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-2"
+            className="px-5 py-2.5 bg-white border border-slate-200 text-slate-700 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-all flex items-center gap-2"
           >
             <Icons.Newspaper /> ექსპორტი
           </button>
           <button 
             onClick={() => { setEditingEmployee(null); setIsModalOpen(true); }}
-            className="px-6 py-2 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-md"
+            className="px-8 py-2.5 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-md"
           >
             დამატება
           </button>
         </div>
       </div>
 
-      <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm p-6 grid grid-cols-1 md:grid-cols-4 gap-4">
+      <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm p-8 grid grid-cols-1 md:grid-cols-4 gap-6">
         <div className="md:col-span-1">
-          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">ძებნა</label>
+          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">ძებნა</label>
           <div className="relative">
             <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300"><Icons.Search /></span>
             <input 
@@ -201,38 +211,38 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
               placeholder="სახელი, ID, ტელეფონი..."
               value={searchTerm}
               onChange={e => setSearchTerm(e.target.value)}
-              className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500"
+              className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500"
             />
           </div>
         </div>
         <div>
-          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">როლი</label>
+          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">როლი</label>
           <select 
             value={filters.role}
             onChange={e => setFilters(f => ({...f, role: e.target.value}))}
-            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-bold outline-none"
+            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none"
           >
             <option value="">ყველა როლი</option>
             {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">დეპარტამენტი</label>
+          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">დეპარტამენტი</label>
           <select 
             value={filters.department}
             onChange={e => setFilters(f => ({...f, department: e.target.value}))}
-            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-bold outline-none"
+            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none"
           >
             <option value="">ყველა დეპარტამენტი</option>
             {departments.map(d => <option key={d} value={d}>{d}</option>)}
           </select>
         </div>
         <div>
-          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">პოზიცია</label>
+          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">პოზიცია</label>
           <select 
             value={filters.position}
             onChange={e => setFilters(f => ({...f, position: e.target.value}))}
-            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-bold outline-none"
+            className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none"
           >
             <option value="">ყველა პოზიცია</option>
             {positions.map(p => <option key={p.title} value={p.title}>{p.title}</option>)}
@@ -245,44 +255,52 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
           <table className="w-full text-left">
             <thead>
               <tr className="bg-slate-50 text-slate-400 text-[8px] font-black uppercase tracking-widest border-b border-slate-100">
-                <th className="px-6 py-4">თანამშრომელი</th>
-                <th className="px-4 py-4">პირადი ნომერი</th>
-                <th className="px-4 py-4">კონტაქტი</th>
-                <th className="px-4 py-4">დეპარტამენტი / პოზიცია</th>
-                <th className="px-4 py-4">როლი</th>
-                <th className="px-4 py-4 text-right">ქმედება</th>
+                <th className="px-8 py-6">თანამშრომელი</th>
+                <th className="px-6 py-6">პირადი ნომერი</th>
+                <th className="px-6 py-6">კონტაქტი</th>
+                <th className="px-6 py-6">დეპარტამენტი / პოზიცია</th>
+                <th className="px-6 py-6">შვებულება (დარჩ/სულ)</th>
+                <th className="px-6 py-6">როლი</th>
+                <th className="px-6 py-6 text-right">ქმედება</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredEmployees.map(emp => (
                 <tr key={emp.id} className="hover:bg-slate-50/50 transition-colors group">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center gap-3">
-                      <img src={emp.avatar} className="w-10 h-10 rounded-[5px] object-cover border border-slate-100" />
+                  <td className="px-8 py-6">
+                    <div className="flex items-center gap-4">
+                      <img src={emp.avatar} className="w-12 h-12 rounded-[5px] object-cover border border-slate-100" />
                       <div>
-                        <p className="text-[11px] font-black text-slate-900 uppercase leading-none">{emp.name}</p>
-                        <p className="text-[9px] font-bold text-slate-400 uppercase mt-1">ID: {emp.id}</p>
+                        <p className="text-[12px] font-black text-slate-900 uppercase leading-none">{emp.name}</p>
+                        <p className="text-[10px] font-bold text-slate-400 uppercase mt-1.5">ID: {emp.id}</p>
                       </div>
                     </div>
                   </td>
-                  <td className="px-4 py-4">
-                    <p className="text-[10px] font-bold text-slate-600">{emp.personalId || "—"}</p>
+                  <td className="px-6 py-6">
+                    <p className="text-[11px] font-bold text-slate-600">{emp.personalId || "—"}</p>
                   </td>
-                  <td className="px-4 py-4">
-                    <p className="text-[10px] font-black text-slate-700">{emp.phoneNumber || "—"}</p>
-                    <p className="text-[9px] text-slate-400">{emp.email || "—"}</p>
+                  <td className="px-6 py-6">
+                    <p className="text-[11px] font-black text-slate-700">{emp.phoneNumber || "—"}</p>
+                    <p className="text-[10px] text-slate-400 mt-0.5">{emp.email || "—"}</p>
                   </td>
-                  <td className="px-4 py-4">
-                    <p className="text-[10px] font-black text-indigo-600 uppercase tracking-tight">{emp.department}</p>
-                    <p className="text-[9px] font-bold text-slate-500 uppercase">{emp.position}</p>
+                  <td className="px-6 py-6">
+                    <p className="text-[11px] font-black text-indigo-600 uppercase tracking-tight">{emp.department}</p>
+                    <p className="text-[10px] font-bold text-slate-500 uppercase mt-0.5">{emp.position}</p>
                   </td>
-                  <td className="px-4 py-4">
-                    <span className="text-[8px] font-black px-2 py-1 bg-slate-100 text-slate-600 rounded-[3px] uppercase tracking-widest group-hover:bg-indigo-600 group-hover:text-white transition-colors">
+                  <td className="px-6 py-6">
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px] font-black text-slate-900">{(emp.vacationDaysTotal || 0) - (emp.vacationDaysUsed || 0)}</span>
+                      <span className="text-[10px] text-slate-400">/</span>
+                      <span className="text-[11px] font-bold text-slate-400">{emp.vacationDaysTotal || 0}</span>
+                    </div>
+                  </td>
+                  <td className="px-6 py-6">
+                    <span className="text-[8px] font-black px-2.5 py-1.5 bg-slate-100 text-slate-600 rounded-[3px] uppercase tracking-widest group-hover:bg-indigo-600 group-hover:text-white transition-colors">
                       {emp.role}
                     </span>
                   </td>
-                  <td className="px-4 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2">
+                  <td className="px-6 py-6 text-right">
+                    <div className="flex items-center justify-end gap-3">
                       <button 
                         onClick={() => { setEditingEmployee(emp); setIsModalOpen(true); }}
                         className="p-2 text-slate-300 hover:text-indigo-600 transition-colors"
@@ -290,9 +308,9 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
                       >
                         <Icons.Edit />
                       </button>
-                      {emp.role !== 'Admin' && (
+                      {isAdmin && (
                         <button 
-                          onClick={() => handleDelete(emp.id, emp.role)}
+                          onClick={() => handleDelete(emp.uid || emp.id, emp.role)}
                           className="p-2 text-slate-300 hover:text-rose-500 transition-colors"
                           title="წაშლა"
                         >
@@ -311,139 +329,138 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
       {isModalOpen && (
         <div className="fixed inset-0 bg-slate-900/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white rounded-[5px] w-full max-w-4xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
-            <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-shrink-0">
+            <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-shrink-0">
                <h4 className="text-sm font-black uppercase text-slate-900">{editingEmployee?.id ? 'რედაქტირება' : 'ახალი თანამშრომელი'}</h4>
                <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icons.X /></button>
             </div>
             
-            <div className="p-8 overflow-y-auto space-y-8 custom-scrollbar">
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-8">
-                {/* Basic Info */}
-                <div className="space-y-4">
-                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">პირადი ინფორმაცია</h5>
-                  <div className="space-y-3">
+            <div className="p-10 overflow-y-auto space-y-10 custom-scrollbar">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
+                <div className="space-y-5">
+                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">პირადი ინფორმაცია</h5>
+                  <div className="space-y-4">
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">სრული სახელი *</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">სრული სახელი *</label>
                       <input 
                         type="text" 
                         value={editingEmployee?.name || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, name: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">პირადი ნომერი</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">პირადი ნომერი</label>
                       <input 
                         type="text" 
                         value={editingEmployee?.personalId || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, personalId: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">დაბადების თარიღი</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">დაბადების თარიღი</label>
                       <input 
                         type="date" 
                         value={editingEmployee?.birthday || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, birthday: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
                       />
                     </div>
                   </div>
                 </div>
 
-                {/* Contact & Address */}
-                <div className="space-y-4">
-                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">კონტაქტი</h5>
-                  <div className="space-y-3">
+                <div className="space-y-5">
+                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">კონტაქტი</h5>
+                  <div className="space-y-4">
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">ტელეფონი</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">ტელეფონი</label>
                       <input 
                         type="tel" 
                         value={editingEmployee?.phoneNumber || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, phoneNumber: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">ელფოსტა</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">ელფოსტა</label>
                       <input 
                         type="email" 
                         value={editingEmployee?.email || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, email: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
                       />
                     </div>
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">მისამართი</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">მისამართი</label>
                       <textarea 
-                        rows={2}
+                        rows={3}
                         value={editingEmployee?.address || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, address: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500 resize-none" 
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500 resize-none" 
                       />
                     </div>
                   </div>
                 </div>
 
-                {/* Job Info */}
-                <div className="space-y-4">
-                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-1">სამსახურებრივი</h5>
-                  <div className="space-y-3">
+                <div className="space-y-5">
+                  <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">სამსახურებრივი</h5>
+                  <div className="space-y-4">
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">პოზიცია *</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">პოზიცია *</label>
                       <select 
                         value={editingEmployee?.position || ''} 
                         onChange={e => handlePositionChange(e.target.value)}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none"
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none"
                       >
                         <option value="">აირჩიეთ პოზიცია</option>
                         {positions.map(p => <option key={p.title} value={p.title}>{p.title}</option>)}
                       </select>
                     </div>
                     <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">დეპარტამენტი (ავტომატური)</label>
-                      <input 
-                        type="text" 
-                        readOnly
-                        value={editingEmployee?.department || ''} 
-                        className="w-full bg-slate-100 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold text-slate-400" 
-                      />
-                    </div>
-                    <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">როლი *</label>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">როლი *</label>
                       <select 
                         value={editingEmployee?.role || 'Employee'} 
                         onChange={e => setEditingEmployee(p => ({...p!, role: e.target.value as UserRole}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none"
+                        className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none"
                       >
                         {ROLES.map(r => <option key={r} value={r}>{r}</option>)}
                       </select>
                     </div>
-                    <div>
-                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1 block">მუშაობის დაწყება</label>
-                      <input 
-                        type="date" 
-                        value={editingEmployee?.jobStartDate || ''} 
-                        onChange={e => setEditingEmployee(p => ({...p!, jobStartDate: e.target.value}))}
-                        className="w-full bg-slate-50 border border-slate-200 px-3 py-2 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
-                      />
+                    <div className="grid grid-cols-2 gap-4">
+                       <div>
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">შვებულება სულ</label>
+                          <input 
+                            type="number" 
+                            value={editingEmployee?.vacationDaysTotal || 0} 
+                            onChange={e => setEditingEmployee(p => ({...p!, vacationDaysTotal: parseInt(e.target.value) || 0}))}
+                            className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                          />
+                       </div>
+                       <div>
+                          <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">გამოყენებული</label>
+                          <input 
+                            type="number" 
+                            value={editingEmployee?.vacationDaysUsed || 0} 
+                            onChange={e => setEditingEmployee(p => ({...p!, vacationDaysUsed: parseInt(e.target.value) || 0}))}
+                            className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                          />
+                       </div>
                     </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="p-6 bg-slate-50 flex gap-2 flex-shrink-0">
+            <div className="p-8 bg-slate-50 flex gap-4 flex-shrink-0">
               <button 
                 onClick={() => setIsModalOpen(false)} 
-                className="flex-1 py-3 bg-white border border-slate-200 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-100 transition-colors"
+                className="flex-1 py-4 bg-white border border-slate-200 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-100 transition-colors"
               >
                 გაუქმება
               </button>
               <button 
                 onClick={handleSave} 
-                className="flex-1 py-3 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100"
+                className="flex-1 py-4 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100"
               >
                 შენახვა
               </button>

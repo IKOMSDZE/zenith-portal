@@ -1,26 +1,44 @@
 
-import { db } from '../firebase';
 import { 
-  collection, doc, getDoc, getDocs, setDoc, 
-  addDoc, deleteDoc, query, orderBy, limit,
-  updateDoc, writeBatch
-} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+  doc, 
+  getDoc, 
+  setDoc, 
+  collection, 
+  getDocs, 
+  deleteDoc, 
+  query, 
+  limit, 
+  where, 
+  writeBatch,
+  orderBy
+} from 'firebase/firestore';
+import { db } from './firebase';
 import { User, AttendanceRecord, VacationRecord, BranchConfig, PositionMapping, CashDeskRecord, UserRole, View, NewsItem } from '../types';
-import { MOCK_USER, MOCK_EMPLOYEES, MOCK_VACATIONS, MOCK_ATTENDANCE_REPORTS, DEFAULT_BRANCH_CONFIGS, OFFICIAL_POSITIONS, DEPARTMENTS, MOCK_NEWS } from '../constants';
+import { MOCK_EMPLOYEES, DEFAULT_BRANCH_CONFIGS, OFFICIAL_POSITIONS, DEPARTMENTS } from '../constants';
 
-const KEYS = {
-  USER: 'zenith_current_user',
-  EMPLOYEES: 'employees',
+const COLLECTIONS = {
+  USERS: 'users',
   ATTENDANCE: 'attendance',
   VACATIONS: 'vacations',
   BRANCHES: 'branches',
   POSITIONS: 'positions',
   DEPARTMENTS: 'departments',
   SETTINGS: 'settings',
-  BRANCH_BALANCES: 'branch_balances',
-  CASH_HISTORY: 'cash_history',
+  CASH_HISTORY: 'cashHistory',
+  SMS_LOGS: 'smsLogs',
+  BRANCH_BALANCES: 'branchBalances',
   NEWS: 'news'
 };
+
+export interface SMSLog {
+  id: string;
+  to: string;
+  content: string;
+  timestamp: string;
+  status: 'Dispatched' | 'Error';
+  apiMessage?: string;
+  type: 'Automation' | 'Test' | 'Update';
+}
 
 export interface CustomFont {
   name: string;
@@ -29,198 +47,326 @@ export interface CustomFont {
 }
 
 export interface SystemSettings {
+  appTitle?: string;
+  faviconUrl?: string;
   headerFont?: CustomFont;
   bodyFont?: CustomFont;
   logoUrl?: string;
   smsApiKey?: string;
-  firebaseConfig?: any;
+  smsSenderName?: string;
   adminPhone?: string;
   accountantPhone?: string;
+  hrPhone?: string;
   birthdaySmsTime?: string;
   userSmsTemplate?: string;
   adminSmsTemplate?: string;
   accountantSmsTemplate?: string;
   attendanceEnabledDepartments?: string[];
   cashDeskEnabledDepartments?: string[];
+  replacementEnabledDepartments?: string[];
+  branchSelectorEnabledDepartments?: string[];
   rolePermissions: Record<UserRole, View[]>;
 }
 
 const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, View[]> = {
-  Admin: Object.values(View),
-  Manager: [View.DASHBOARD, View.ATTENDANCE, View.PROFILE, View.VACATIONS, View.CASHIER, View.ATTENDANCE_REPORT, View.ACCOUNTANT, View.USERS],
-  Editor: [View.DASHBOARD, View.ATTENDANCE, View.PROFILE, View.VACATIONS, View.CASHIER, View.COMPANY_STRUCTURE, View.USERS],
+  Admin: Object.values(View).filter(v => v !== View.ATTENDANCE),
+  Manager: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER, View.ATTENDANCE_REPORT, View.ACCOUNTANT, View.USERS],
+  Editor: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER, View.COMPANY_STRUCTURE, View.USERS],
   Accountant: [View.DASHBOARD, View.PROFILE, View.CASHIER, View.ACCOUNTANT],
-  Employee: [View.DASHBOARD, View.ATTENDANCE, View.PROFILE, View.VACATIONS, View.CASHIER],
+  Employee: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER],
   HR: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.USERS]
 };
 
+const DEFAULT_SETTINGS: SystemSettings = {
+  appTitle: 'Zenith Portal',
+  smsApiKey: 'af211e7c34a14673b6ff4e27116a7fc1',
+  smsSenderName: 'smsoffice',
+  attendanceEnabledDepartments: ['რითეილი'],
+  cashDeskEnabledDepartments: ['რითეილი'],
+  replacementEnabledDepartments: ['რითეილი'],
+  branchSelectorEnabledDepartments: ['რითეილი'],
+  rolePermissions: DEFAULT_ROLE_PERMISSIONS,
+  logoUrl: '',
+  faviconUrl: '',
+  userSmsTemplate: 'გილოცავთ დაბადების დღეს {name}! გისურვებთ წარმატებებს.',
+  adminSmsTemplate: 'დღეს არის {name}-ს დაბადების დღე. ტელ: {phone}',
+  adminPhone: '',
+  accountantPhone: '',
+  hrPhone: '',
+  birthdaySmsTime: '09:00'
+};
+
 export const Database = {
-  /**
-   * AUTOMATIC MIGRATION: 
-   * Checks if critical collections are empty and seeds them with mock data if necessary.
-   */
   init: async () => {
-    const settingsSnap = await getDoc(doc(db, KEYS.SETTINGS, "global_settings"));
-    
+    const settingsSnap = await getDoc(doc(db, COLLECTIONS.SETTINGS, 'system'));
     if (!settingsSnap.exists()) {
-      console.log("Starting automatic database migration to Firebase...");
+      const batch = writeBatch(db);
       
-      // 1. Seed Global Settings
-      await setDoc(doc(db, KEYS.SETTINGS, "global_settings"), {
-        smsApiKey: '9fb1518f8d95460f95147575276e6955',
-        attendanceEnabledDepartments: ['რითეილი'],
-        cashDeskEnabledDepartments: ['რითეილი'],
-        rolePermissions: DEFAULT_ROLE_PERMISSIONS,
-        logoUrl: ''
+      // Settings
+      batch.set(doc(db, COLLECTIONS.SETTINGS, 'system'), DEFAULT_SETTINGS);
+      
+      // Employees
+      MOCK_EMPLOYEES.forEach(emp => {
+        batch.set(doc(db, COLLECTIONS.USERS, emp.id), emp);
       });
       
-      // 2. Seed Employees
-      for (const emp of MOCK_EMPLOYEES) {
-        await setDoc(doc(db, KEYS.EMPLOYEES, emp.id), emp);
-      }
+      // Branches & Balances
+      DEFAULT_BRANCH_CONFIGS.forEach(branch => {
+        batch.set(doc(db, COLLECTIONS.BRANCHES, branch.name), branch);
+        // Initialize 0 balance for each branch
+        batch.set(doc(db, COLLECTIONS.BRANCH_BALANCES, branch.name), { amount: 0 });
+      });
       
-      // 3. Seed Branches
-      for (const branch of DEFAULT_BRANCH_CONFIGS) {
-        await setDoc(doc(db, KEYS.BRANCHES, branch.name), branch);
-      }
+      // Positions
+      OFFICIAL_POSITIONS.forEach(pos => {
+        batch.set(doc(db, COLLECTIONS.POSITIONS, pos.title), pos);
+      });
+      
+      // Departments
+      batch.set(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: DEPARTMENTS });
+      
+      // Initialize sample news
+      const sampleNews: NewsItem = {
+        id: 'news-1',
+        title: 'კეთილი იყოს თქვენი მობრძანება Zenith-ში',
+        date: new Date().toLocaleDateString('ka-GE'),
+        content: 'ჩვენი ახალი პორტალი უკვე მზად არის სამუშაოდ. აქ თქვენ შეძლებთ დასწრების აღრიცხვას, შვებულების მოთხოვნას და სხვა.',
+        type: 'Info'
+      };
+      batch.set(doc(db, COLLECTIONS.NEWS, sampleNews.id), sampleNews);
 
-      // 4. Seed Metadata (Positions & Departments)
-      await setDoc(doc(db, "metadata", KEYS.POSITIONS), { list: OFFICIAL_POSITIONS });
-      await setDoc(doc(db, "metadata", KEYS.DEPARTMENTS), { list: DEPARTMENTS });
-
-      // 5. Seed News
-      for (const item of MOCK_NEWS) {
-        await setDoc(doc(db, KEYS.NEWS, item.id), item);
-      }
-
-      console.log("Migration complete.");
+      // Initialize a sample transaction for the cashier database
+      const sampleTx: CashDeskRecord = {
+        id: 'INIT-TX-001',
+        branch: DEFAULT_BRANCH_CONFIGS[0].name,
+        cashierId: 'SYSTEM',
+        cashierName: 'System Admin',
+        date: new Date().toISOString().split('T')[0],
+        openingBalance: 0,
+        cash: 0,
+        terminal: 0,
+        incasation: 0,
+        closingBalance: 0
+      };
+      batch.set(doc(db, COLLECTIONS.CASH_HISTORY, sampleTx.id), sampleTx);
+      
+      await batch.commit();
     }
   },
 
-  // Auth/Session (Local Cache for immediate UI)
-  getCurrentUser: (): User => {
-    const data = localStorage.getItem(KEYS.USER);
-    return data ? JSON.parse(data) : MOCK_USER;
+  getCurrentUser: async (): Promise<User | null> => {
+    const sessionData = localStorage.getItem('zenith_current_user');
+    if (!sessionData) return null;
+    const sessionUser = JSON.parse(sessionData);
+    if (sessionUser.uid) {
+       const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, sessionUser.uid));
+       if (userDoc.exists()) return userDoc.data() as User;
+    }
+    const userDocById = await getDoc(doc(db, COLLECTIONS.USERS, sessionUser.id));
+    return userDocById.exists() ? (userDocById.data() as User) : sessionUser;
+  },
+
+  getUserByUid: async (uid: string): Promise<User | null> => {
+    const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, uid));
+    if (userDoc.exists()) return userDoc.data() as User;
+    return null;
+  },
+
+  getUserByPersonalId: async (personalId: string): Promise<User | null> => {
+    const q = query(collection(db, COLLECTIONS.USERS), where("personalId", "==", personalId), limit(1));
+    const snap = await getDocs(q);
+    if (!snap.empty) return snap.docs[0].data() as User;
+    return MOCK_EMPLOYEES.find(e => e.personalId === personalId) || null;
+  },
+
+  syncUserWithAuth: async (firebaseUid: string, email: string): Promise<User | null> => {
+    const existing = await Database.getUserByUid(firebaseUid);
+    if (existing) return existing;
+
+    const q = query(collection(db, COLLECTIONS.USERS), where("email", "==", email), limit(1));
+    const snap = await getDocs(q);
+    
+    if (!snap.empty) {
+      const docData = snap.docs[0].data() as User;
+      const oldId = snap.docs[0].id;
+      const updatedUser = { ...docData, uid: firebaseUid };
+      const batch = writeBatch(db);
+      batch.set(doc(db, COLLECTIONS.USERS, firebaseUid), updatedUser);
+      batch.delete(doc(db, COLLECTIONS.USERS, oldId));
+      await batch.commit();
+      return updatedUser;
+    }
+
+    const mockUser = MOCK_EMPLOYEES.find(e => e.email?.toLowerCase() === email.toLowerCase());
+    if (mockUser) {
+      const migratedUser = { ...mockUser, uid: firebaseUid };
+      await setDoc(doc(db, COLLECTIONS.USERS, firebaseUid), migratedUser);
+      return migratedUser;
+    }
+    return null;
   },
 
   setCurrentUser: async (user: User) => {
-    const userRef = doc(db, KEYS.EMPLOYEES, user.id);
-    await setDoc(userRef, user, { merge: true });
-    localStorage.setItem(KEYS.USER, JSON.stringify(user));
+    localStorage.setItem('zenith_current_user', JSON.stringify(user));
+    const key = user.uid || user.id;
+    await setDoc(doc(db, COLLECTIONS.USERS, key), user);
   },
 
-  // Employees
   getEmployees: async (): Promise<User[]> => {
-    const querySnapshot = await getDocs(collection(db, KEYS.EMPLOYEES));
-    return querySnapshot.docs.map(doc => doc.data() as User);
+    const snap = await getDocs(collection(db, COLLECTIONS.USERS));
+    return snap.docs.map(d => d.data() as User);
   },
 
   setEmployees: async (employees: User[]) => {
-    // Optimization: using sequential sets for simplicity in migration
-    for (const emp of employees) {
-      await setDoc(doc(db, KEYS.EMPLOYEES, emp.id), emp);
-    }
+    const batch = writeBatch(db);
+    employees.forEach((emp) => {
+      const key = emp.uid || emp.id;
+      const ref = doc(db, COLLECTIONS.USERS, key);
+      batch.set(ref, emp);
+    });
+    await batch.commit();
   },
 
-  // Attendance
+  deleteUser: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.USERS, id));
+  },
+
   getAttendanceLogs: async (): Promise<AttendanceRecord[]> => {
-    const q = query(collection(db, KEYS.ATTENDANCE), orderBy("date", "desc"));
-    const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AttendanceRecord));
+    const snap = await getDocs(query(collection(db, COLLECTIONS.ATTENDANCE)));
+    return snap.docs.map(d => d.data() as AttendanceRecord);
   },
 
   saveAttendanceLog: async (log: AttendanceRecord) => {
-    await addDoc(collection(db, KEYS.ATTENDANCE), log);
+    await setDoc(doc(db, COLLECTIONS.ATTENDANCE, log.id), log);
   },
 
-  updateAttendanceLog: async (log: AttendanceRecord) => {
-    if (!log.id) return;
-    const logRef = doc(db, KEYS.ATTENDANCE, log.id);
-    await setDoc(logRef, log, { merge: true });
+  deleteAttendanceLog: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.ATTENDANCE, id));
   },
 
-  // Vacations
   getVacations: async (): Promise<VacationRecord[]> => {
-    const querySnapshot = await getDocs(collection(db, KEYS.VACATIONS));
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VacationRecord));
+    const snap = await getDocs(collection(db, COLLECTIONS.VACATIONS));
+    return snap.docs.map(d => d.data() as VacationRecord);
+  },
+
+  saveVacation: async (vacation: VacationRecord) => {
+    await setDoc(doc(db, COLLECTIONS.VACATIONS, vacation.id), vacation);
   },
 
   setVacations: async (vacations: VacationRecord[]) => {
-    for (const v of vacations) {
-      await setDoc(doc(db, KEYS.VACATIONS, v.id), v);
-    }
+    const batch = writeBatch(db);
+    vacations.forEach((v) => {
+      batch.set(doc(db, COLLECTIONS.VACATIONS, v.id), v);
+    });
+    await batch.commit();
   },
 
-  // Branches & Balances
+  deleteVacation: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.VACATIONS, id));
+  },
+
   getBranches: async (): Promise<BranchConfig[]> => {
-    const querySnapshot = await getDocs(collection(db, KEYS.BRANCHES));
-    return querySnapshot.docs.map(doc => doc.data() as BranchConfig);
+    const snap = await getDocs(collection(db, COLLECTIONS.BRANCHES));
+    return snap.docs.map(d => d.data() as BranchConfig);
   },
 
   setBranches: async (branches: BranchConfig[]) => {
-    for (const b of branches) {
-      await setDoc(doc(db, KEYS.BRANCHES, b.name), b);
-    }
+    const batch = writeBatch(db);
+    branches.forEach((b) => {
+      batch.set(doc(db, COLLECTIONS.BRANCHES, b.name), b);
+    });
+    await batch.commit();
+  },
+
+  deleteBranch: async (branchName: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.BRANCHES, branchName));
+    await deleteDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
   },
 
   getBranchBalance: async (branchName: string): Promise<number> => {
-    const snap = await getDoc(doc(db, KEYS.BRANCH_BALANCES, branchName));
-    return snap.exists() ? snap.data().balance : 0;
+    const snap = await getDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
+    return snap.exists() ? (snap.data()?.amount || 0) : 0;
   },
 
   updateBranchBalance: async (branchName: string, newBalance: number) => {
-    await setDoc(doc(db, KEYS.BRANCH_BALANCES, branchName), { balance: newBalance });
+    await setDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName), { amount: newBalance });
   },
 
-  // Metadata
   getPositions: async (): Promise<PositionMapping[]> => {
-    const snap = await getDoc(doc(db, "metadata", KEYS.POSITIONS));
-    return snap.exists() ? snap.data().list : OFFICIAL_POSITIONS;
+    const snap = await getDocs(collection(db, COLLECTIONS.POSITIONS));
+    return snap.docs.map(d => d.data() as PositionMapping);
   },
 
   setPositions: async (positions: PositionMapping[]) => {
-    await setDoc(doc(db, "metadata", KEYS.POSITIONS), { list: positions });
+    const batch = writeBatch(db);
+    positions.forEach((p) => {
+      batch.set(doc(db, COLLECTIONS.POSITIONS, p.title), p);
+    });
+    await batch.commit();
+  },
+
+  deletePosition: async (title: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.POSITIONS, title));
   },
 
   getDepartments: async (): Promise<string[]> => {
-    const snap = await getDoc(doc(db, "metadata", KEYS.DEPARTMENTS));
-    return snap.exists() ? snap.data().list : DEPARTMENTS;
+    const snap = await getDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'));
+    return snap.exists() ? (snap.data()?.items || DEPARTMENTS) : DEPARTMENTS;
   },
 
   setDepartments: async (departments: string[]) => {
-    await setDoc(doc(db, "metadata", KEYS.DEPARTMENTS), { list: departments });
+    await setDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: departments });
   },
 
-  // Cash History
   getCashHistory: async (): Promise<CashDeskRecord[]> => {
-    const querySnapshot = await getDocs(collection(db, KEYS.CASH_HISTORY));
-    return querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as CashDeskRecord));
+    const q = query(collection(db, COLLECTIONS.CASH_HISTORY), orderBy('date', 'desc'));
+    const snap = await getDocs(q);
+    return snap.docs.map(d => d.data() as CashDeskRecord);
   },
 
   saveCashRecord: async (record: CashDeskRecord) => {
-    await setDoc(doc(db, KEYS.CASH_HISTORY, record.id), record);
+    await setDoc(doc(db, COLLECTIONS.CASH_HISTORY, record.id), record);
   },
 
   deleteCashRecord: async (id: string) => {
-    await deleteDoc(doc(db, KEYS.CASH_HISTORY, id));
+    await deleteDoc(doc(db, COLLECTIONS.CASH_HISTORY, id));
   },
 
-  // News
   getNews: async (): Promise<NewsItem[]> => {
-    const q = query(collection(db, KEYS.NEWS), orderBy("date", "desc"));
-    const querySnapshot = await getDocs(q);
-    return querySnapshot.docs.map(doc => doc.data() as NewsItem);
+    const snap = await getDocs(collection(db, COLLECTIONS.NEWS));
+    return snap.docs.map(d => d.data() as NewsItem);
   },
 
-  // Settings
+  saveNews: async (news: NewsItem) => {
+    await setDoc(doc(db, COLLECTIONS.NEWS, news.id), news);
+  },
+
+  deleteNews: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.NEWS, id));
+  },
+
+  getSMSLogs: async (): Promise<SMSLog[]> => {
+    const snap = await getDocs(query(collection(db, COLLECTIONS.SMS_LOGS), limit(500)));
+    return snap.docs.map(d => d.data() as SMSLog);
+  },
+
+  addSMSLog: async (log: Omit<SMSLog, 'id' | 'timestamp'>) => {
+    const id = Math.random().toString(36).substr(2, 9);
+    const newLog: SMSLog = {
+      ...log,
+      id,
+      timestamp: new Date().toLocaleString('ka-GE')
+    };
+    await setDoc(doc(db, COLLECTIONS.SMS_LOGS, id), newLog);
+  },
+
   getSettings: async (): Promise<SystemSettings> => {
-    const snap = await getDoc(doc(db, KEYS.SETTINGS, "global_settings"));
-    if (snap.exists()) return snap.data() as SystemSettings;
-    return { attendanceEnabledDepartments: ['რითეილი'], cashDeskEnabledDepartments: ['რითეილი'], rolePermissions: DEFAULT_ROLE_PERMISSIONS };
+    const snap = await getDoc(doc(db, COLLECTIONS.SETTINGS, 'system'));
+    return snap.exists() ? (snap.data() as SystemSettings) : DEFAULT_SETTINGS;
   },
 
   setSettings: async (settings: SystemSettings) => {
-    await setDoc(doc(db, KEYS.SETTINGS, "global_settings"), settings);
+    await setDoc(doc(db, COLLECTIONS.SETTINGS, 'system'), settings);
     window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: settings }));
   }
 };

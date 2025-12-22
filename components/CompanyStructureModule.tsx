@@ -2,23 +2,32 @@
 import React, { useState } from 'react';
 import { Icons } from '../constants';
 import { BranchConfig, PositionMapping } from '../types';
+import { SystemSettings } from '../services/database';
 
 interface CompanyStructureModuleProps {
   branches: BranchConfig[];
-  onUpdateBranches: (newBranches: BranchConfig[]) => void;
+  onUpdateBranches: (newBranches: BranchConfig[]) => Promise<void>;
+  onDeleteBranch: (name: string) => Promise<void>;
   positions: PositionMapping[];
-  onUpdatePositions: (newPositions: PositionMapping[]) => void;
+  onUpdatePositions: (newPositions: PositionMapping[]) => Promise<void>;
+  onDeletePosition: (title: string) => Promise<void>;
   departments: string[];
-  onUpdateDepartments: (newDepts: string[]) => void;
+  onUpdateDepartments: (newDepts: string[]) => Promise<void>;
+  settings: SystemSettings;
+  onUpdateSettings: (newSettings: SystemSettings) => Promise<void>;
 }
 
 const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
   branches,
   onUpdateBranches,
+  onDeleteBranch,
   positions,
   onUpdatePositions,
+  onDeletePosition,
   departments,
-  onUpdateDepartments
+  onUpdateDepartments,
+  settings,
+  onUpdateSettings
 }) => {
   const [newBranch, setNewBranch] = useState<BranchConfig>({ name: '', openTime: '09:00', lateThreshold: 15 });
   const [editingBranch, setEditingBranch] = useState<{index: number, data: BranchConfig} | null>(null);
@@ -27,42 +36,63 @@ const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
   const [newPos, setNewPos] = useState<PositionMapping>({ title: '', department: '' });
   const [editingPos, setEditingPos] = useState<{index: number, data: PositionMapping} | null>(null);
 
-  const handleAddBranch = () => {
+  const handleAddBranch = async () => {
     if (!newBranch.name) return;
-    onUpdateBranches([...branches, newBranch]);
+    await onUpdateBranches([...branches, newBranch]);
     setNewBranch({ name: '', openTime: '09:00', lateThreshold: 15 });
   };
-  const handleUpdateBranch = () => {
+  const handleUpdateBranch = async () => {
     if (!editingBranch) return;
     const updated = [...branches]; updated[editingBranch.index] = editingBranch.data;
-    onUpdateBranches(updated); setEditingBranch(null);
+    await onUpdateBranches(updated); setEditingBranch(null);
   };
-  const handleDeleteBranch = (name: string) => {
-    if (window.confirm(`ნამდვილად გსურთ ფილიალის წაშლა: ${name}?`)) onUpdateBranches(branches.filter(b => b.name !== name));
+  const handleDeleteBranchAction = async (name: string) => {
+    if (window.confirm(`ნამდვილად გსურთ ფილიალის წაშლა: ${name}?`)) {
+      await onDeleteBranch(name);
+    }
   };
-  const handleAddDept = () => {
+  const handleAddDept = async () => {
     if (!newDept || departments.includes(newDept)) return;
-    onUpdateDepartments([...departments, newDept]); setNewDept('');
+    await onUpdateDepartments([...departments, newDept]); setNewDept('');
   };
-  const handleUpdateDept = () => {
+  const handleUpdateDept = async () => {
     if (!editingDept) return;
     const updated = [...departments]; updated[editingDept.index] = editingDept.value;
-    onUpdateDepartments(updated); setEditingDept(null);
+    await onUpdateDepartments(updated); setEditingDept(null);
   };
-  const handleDeleteDept = (dept: string) => {
-    if (window.confirm(`ნამდვილად გსურთ დეპარტამენტის წაშლა: ${dept}?`)) onUpdateDepartments(departments.filter(d => d !== dept));
+  const handleDeleteDept = async (dept: string) => {
+    if (window.confirm(`ნამდვილად გსურთ დეპარტამენტის წაშლა: ${dept}?`)) await onUpdateDepartments(departments.filter(d => d !== dept));
   };
-  const handleAddPos = () => {
+  const handleAddPos = async () => {
     if (!newPos.title || !newPos.department) return;
-    onUpdatePositions([...positions, newPos]); setNewPos({ title: '', department: '' });
+    await onUpdatePositions([...positions, newPos]); setNewPos({ title: '', department: '' });
   };
-  const handleUpdatePos = () => {
+  const handleUpdatePos = async () => {
     if (!editingPos) return;
     const updated = [...positions]; updated[editingPos.index] = editingPos.data;
-    onUpdatePositions(updated); setEditingPos(null);
+    await onUpdatePositions(updated); setEditingPos(null);
   };
-  const handleDeletePos = (pos: PositionMapping) => {
-    if (window.confirm(`ნამდვილად გსურთ პოზიციის წაშლა: ${pos.title}?`)) onUpdatePositions(positions.filter(p => p.title !== pos.title || p.department !== pos.department));
+  const handleDeletePosAction = async (pos: PositionMapping) => {
+    if (window.confirm(`ნამდვილად გსურთ პოზიციის წაშლა: ${pos.title}?`)) {
+      await onDeletePosition(pos.title);
+    }
+  };
+
+  const toggleFeature = async (dept: string, feature: 'replacement' | 'attendance' | 'branchSelector') => {
+    let key: keyof SystemSettings;
+    if (feature === 'replacement') key = 'replacementEnabledDepartments';
+    else if (feature === 'attendance') key = 'attendanceEnabledDepartments';
+    else key = 'branchSelectorEnabledDepartments';
+
+    const currentEnabled = (settings[key] as string[]) || [];
+    const updatedEnabled = currentEnabled.includes(dept)
+      ? currentEnabled.filter(d => d !== dept)
+      : [...currentEnabled, dept];
+    
+    await onUpdateSettings({
+      ...settings,
+      [key]: updatedEnabled
+    });
   };
 
   return (
@@ -101,7 +131,7 @@ const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
                 </div>
                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button onClick={() => setEditingBranch({index: idx, data: b})} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Icons.Edit /></button>
-                  <button onClick={() => handleDeleteBranch(b.name)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
+                  <button onClick={() => handleDeleteBranchAction(b.name)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
                 </div>
               </div>
             ))}
@@ -110,8 +140,9 @@ const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
       </section>
 
       <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
-          <h3 className="text-xs font-black text-slate-900 uppercase">დეპარტამენტები</h3>
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex justify-between items-center">
+          <h3 className="text-xs font-black text-slate-900 uppercase">დეპარტამენტები და ფუნქციები</h3>
+          <span className="text-[9px] font-black text-slate-400 uppercase tracking-widest italic">მართეთ უფლებები დეპარტამენტის მიხედვით</span>
         </div>
         <div className="p-6 space-y-6">
           <div className="flex gap-3 items-end bg-slate-50 p-4 rounded-[5px] border border-slate-100">
@@ -121,18 +152,64 @@ const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
             </div>
             <button onClick={editingDept ? handleUpdateDept : handleAddDept} className="bg-indigo-600 text-white px-8 py-2.5 rounded-[5px] font-black text-[10px] uppercase tracking-widest shadow-sm transition-all hover:bg-indigo-700">{editingDept ? 'შენახვა' : 'დამატება'}</button>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            {departments.map((dept, idx) => (
-              <div key={dept} className="flex items-center justify-between p-4 bg-slate-50 rounded-[5px] border border-slate-100 group gap-3 hover:bg-slate-100/50 transition-colors">
-                <div className="flex items-center gap-3">
-                  <span className="font-black text-slate-900 text-xs uppercase tracking-tight">{dept}</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {departments.map((dept, idx) => {
+              const isReplacementEnabled = (settings.replacementEnabledDepartments || []).includes(dept);
+              const isAttendanceEnabled = (settings.attendanceEnabledDepartments || []).includes(dept);
+              const isBranchSelectorEnabled = (settings.branchSelectorEnabledDepartments || []).includes(dept);
+              
+              return (
+                <div key={dept} className="flex flex-col p-4 bg-slate-50 rounded-[5px] border border-slate-100 group gap-3 hover:bg-slate-100/50 transition-colors">
+                  <div className="flex items-center justify-between">
+                    <span className="font-black text-slate-900 text-sm uppercase tracking-tight">{dept}</span>
+                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button onClick={() => setEditingDept({index: idx, value: dept})} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Icons.Edit /></button>
+                      <button onClick={() => handleDeleteDept(dept)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-6 pt-2 border-t border-slate-200 overflow-x-auto custom-scrollbar whitespace-nowrap">
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <div className="relative">
+                        <input 
+                          type="checkbox" 
+                          checked={isReplacementEnabled} 
+                          onChange={() => toggleFeature(dept, 'replacement')}
+                          className="sr-only peer" 
+                        />
+                        <div className="w-7 h-4 bg-slate-200 rounded-full peer peer-checked:bg-indigo-600 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-widest ${isReplacementEnabled ? 'text-indigo-600' : 'text-slate-400'}`}>შემცვლელი</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <div className="relative">
+                        <input 
+                          type="checkbox" 
+                          checked={isAttendanceEnabled} 
+                          onChange={() => toggleFeature(dept, 'attendance')}
+                          className="sr-only peer" 
+                        />
+                        <div className="w-7 h-4 bg-slate-200 rounded-full peer peer-checked:bg-emerald-600 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-widest ${isAttendanceEnabled ? 'text-emerald-600' : 'text-slate-400'}`}>აღრიცხვა</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 cursor-pointer select-none">
+                      <div className="relative">
+                        <input 
+                          type="checkbox" 
+                          checked={isBranchSelectorEnabled} 
+                          onChange={() => toggleFeature(dept, 'branchSelector')}
+                          className="sr-only peer" 
+                        />
+                        <div className="w-7 h-4 bg-slate-200 rounded-full peer peer-checked:bg-amber-600 transition-colors after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-3 after:w-3 after:transition-all peer-checked:after:translate-x-3"></div>
+                      </div>
+                      <span className={`text-[9px] font-black uppercase tracking-widest ${isBranchSelectorEnabled ? 'text-amber-600' : 'text-slate-400'}`}>პოპაპი</span>
+                    </label>
+                  </div>
                 </div>
-                <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                  <button onClick={() => setEditingDept({index: idx, value: dept})} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Icons.Edit /></button>
-                  <button onClick={() => handleDeleteDept(dept)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </section>
@@ -165,7 +242,7 @@ const CompanyStructureModule: React.FC<CompanyStructureModuleProps> = ({
                 </div>
                 <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                   <button onClick={() => setEditingPos({index: idx, data: p})} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Icons.Edit /></button>
-                  <button onClick={() => handleDeletePos(p)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
+                  <button onClick={() => handleDeletePosAction(p)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
                 </div>
               </div>
             ))}
