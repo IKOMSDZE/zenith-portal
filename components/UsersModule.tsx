@@ -1,6 +1,6 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
-import { User, UserRole, PositionMapping, View } from '../types';
+import { User, UserRole, PositionMapping } from '../types';
 import { Icons } from '../constants';
 import { Database } from '../services/database';
 
@@ -15,6 +15,7 @@ const ROLES: UserRole[] = ['Admin', 'Manager', 'Editor', 'Accountant', 'Employee
 
 const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees, onDeleteUser, positions }) => {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const avatarInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     Database.getCurrentUser().then(setCurrentUser);
@@ -25,6 +26,7 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingEmployee, setEditingEmployee] = useState<Partial<User> | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
+  const [isProcessingAvatar, setIsProcessingAvatar] = useState(false);
   const [filters, setFilters] = useState({
     role: '',
     department: '',
@@ -32,6 +34,71 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
   });
 
   const importRef = useRef<HTMLInputElement>(null);
+
+  const generateEmpId = () => {
+    let newId;
+    let isUnique = false;
+    while (!isUnique) {
+      newId = `EMP-${Math.floor(1000 + Math.random() * 9000)}`;
+      isUnique = !employees.some(e => e.id === newId);
+    }
+    return newId;
+  };
+
+  const handleAddClick = () => {
+    const newId = generateEmpId();
+    setEditingEmployee({
+      id: newId,
+      name: '',
+      role: 'Employee',
+      department: positions[0]?.department || '',
+      position: positions[0]?.title || '',
+      avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=facearea&facepad=2&w=256&h=256&q=80',
+      vacationDaysTotal: 24,
+      vacationDaysUsed: 0,
+      checkedIn: false
+    });
+    setIsModalOpen(true);
+  };
+
+  const compressImage = (base64Str: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 300;
+        const MAX_HEIGHT = 300;
+        let width = img.width;
+        let height = img.height;
+        if (width > height) {
+          if (width > MAX_WIDTH) { height *= MAX_WIDTH / width; width = MAX_WIDTH; }
+        } else {
+          if (height > MAX_HEIGHT) { width *= MAX_HEIGHT / height; height = MAX_HEIGHT; }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.6));
+      };
+    });
+  };
+
+  const handleAvatarUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && editingEmployee) {
+      setIsProcessingAvatar(true);
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result as string;
+        const compressed = await compressImage(base64);
+        setEditingEmployee({ ...editingEmployee, avatar: compressed });
+        setIsProcessingAvatar(false);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
 
   const filteredEmployees = useMemo(() => {
     return employees.filter(emp => {
@@ -57,17 +124,6 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
       setEditingEmployee({ 
         ...editingEmployee, 
         position: posTitle, 
-        department: pos.department 
-      });
-    } else if (pos) {
-      setEditingEmployee({ 
-        id: `EMP-${Math.floor(1000 + Math.random() * 9000)}`,
-        name: '',
-        role: 'Employee',
-        avatar: 'https://images.unsplash.com/photo-1472099645785-5658abf4ff4e?auto=format&fit=facearea&facepad=2&w=256&h=256&q=80',
-        vacationDaysTotal: 24,
-        vacationDaysUsed: 0,
-        position: posTitle,
         department: pos.department 
       });
     }
@@ -140,7 +196,7 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
       const newEmployees: User[] = rows.filter(row => row.trim()).map(row => {
         const cols = row.split(",");
         return {
-          id: cols[0] || `EMP-${Math.random().toString(36).substr(2, 4)}`,
+          id: cols[0] || generateEmpId(),
           name: cols[1] || "Unknown",
           role: (cols[2] as UserRole) || "Employee",
           department: cols[3] || "N/A",
@@ -193,7 +249,7 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
             <Icons.Newspaper /> ექსპორტი
           </button>
           <button 
-            onClick={() => { setEditingEmployee(null); setIsModalOpen(true); }}
+            onClick={handleAddClick}
             className="px-8 py-2.5 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-md"
           >
             დამატება
@@ -330,7 +386,7 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
         <div className="fixed inset-0 bg-slate-900/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
           <div className="bg-white rounded-[5px] w-full max-w-4xl overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200 max-h-[90vh] flex flex-col">
             <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between flex-shrink-0">
-               <h4 className="text-sm font-black uppercase text-slate-900">{editingEmployee?.id ? 'რედაქტირება' : 'ახალი თანამშრომელი'}</h4>
+               <h4 className="text-sm font-black uppercase text-slate-900">{employees.some(e => e.id === editingEmployee?.id) ? 'რედაქტირება' : 'ახალი თანამშრომელი'}</h4>
                <button onClick={() => setIsModalOpen(false)} className="text-slate-400 hover:text-slate-600"><Icons.X /></button>
             </div>
             
@@ -338,7 +394,28 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
               <div className="grid grid-cols-1 md:grid-cols-3 gap-10">
                 <div className="space-y-5">
                   <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest border-b border-slate-100 pb-2">პირადი ინფორმაცია</h5>
-                  <div className="space-y-4">
+                  <div className="space-y-6">
+                    {/* Avatar Upload Preview */}
+                    <div className="flex flex-col items-center gap-4">
+                       <div className="relative group">
+                          <div className="w-24 h-24 rounded-[5px] overflow-hidden bg-slate-100 border border-slate-200 flex items-center justify-center">
+                             {isProcessingAvatar ? (
+                               <div className="w-6 h-6 border-3 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin"></div>
+                             ) : (
+                               <img src={editingEmployee?.avatar} className="w-full h-full object-cover" />
+                             )}
+                          </div>
+                          <button 
+                            onClick={() => avatarInputRef.current?.click()}
+                            className="absolute -bottom-2 -right-2 w-8 h-8 bg-indigo-600 text-white rounded-[5px] flex items-center justify-center shadow-lg hover:bg-indigo-700 transition-all"
+                          >
+                            <Icons.Edit />
+                          </button>
+                          <input type="file" ref={avatarInputRef} className="hidden" accept="image/*" onChange={handleAvatarUpload} />
+                       </div>
+                       <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest">პროფილის სინქრონიზაცია</p>
+                    </div>
+
                     <div>
                       <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">სრული სახელი *</label>
                       <input 
@@ -346,6 +423,15 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
                         value={editingEmployee?.name || ''} 
                         onChange={e => setEditingEmployee(p => ({...p!, name: e.target.value}))}
                         className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-bold outline-none focus:border-indigo-500" 
+                      />
+                    </div>
+                    <div>
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-1.5 block">ID (ავტო-გენერირებული)</label>
+                      <input 
+                        type="text" 
+                        readOnly
+                        value={editingEmployee?.id || ''} 
+                        className="w-full bg-slate-100 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[11px] font-black text-slate-400 cursor-not-allowed" 
                       />
                     </div>
                     <div>
@@ -460,7 +546,8 @@ const UsersModule: React.FC<UsersModuleProps> = ({ employees, onUpdateEmployees,
               </button>
               <button 
                 onClick={handleSave} 
-                className="flex-1 py-4 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100"
+                disabled={isProcessingAvatar}
+                className="flex-1 py-4 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-colors shadow-lg shadow-indigo-100 disabled:opacity-50"
               >
                 შენახვა
               </button>

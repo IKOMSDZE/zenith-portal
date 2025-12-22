@@ -13,8 +13,7 @@ import ProfileModule from './components/ProfileModule';
 import Dashboard from './components/Dashboard';
 import BranchSelectorPopup from './components/BranchSelectorPopup';
 import LoginPage from './components/LoginPage';
-import AIChat from './components/AIChat';
-import { View, User, BranchConfig, VacationRecord, AttendanceRecord, PositionMapping, CashDeskRecord, NewsItem } from './types';
+import { View, User, BranchConfig, VacationRecord, AttendanceRecord, PositionMapping, CashDeskRecord } from './types';
 import { Icons, MOCK_USER } from './constants';
 import { Database, SystemSettings } from './services/database';
 import { SMSService } from './services/smsService';
@@ -38,7 +37,6 @@ const App: React.FC = () => {
   const [cashHistory, setCashHistory] = useState<CashDeskRecord[]>([]);
   const [positions, setPositions] = useState<PositionMapping[]>([]);
   const [departments, setDepartments] = useState<string[]>([]);
-  const [news, setNews] = useState<NewsItem[]>([]);
 
   // Auth & Global Init
   useEffect(() => {
@@ -48,9 +46,18 @@ const App: React.FC = () => {
         await Database.init();
         
         // 1. Sync / Migrate Profile
-        const profile = await Database.syncUserWithAuth(firebaseUser.uid, firebaseUser.email);
+        let profile = await Database.syncUserWithAuth(firebaseUser.uid, firebaseUser.email);
         
         if (profile) {
+          // VACATION RESET LOGIC: Check if it's a new year and reset used days if so
+          const currentYear = new Date().getFullYear();
+          if (!profile.lastVacationResetYear || profile.lastVacationResetYear < currentYear) {
+            profile.vacationDaysUsed = 0;
+            profile.lastVacationResetYear = currentYear;
+            await Database.setCurrentUser(profile);
+            console.log(`[Vacation] Annual reset applied for user: ${profile.name}`);
+          }
+
           setUser(profile);
           await Database.setCurrentUser(profile);
           setIsAuthenticated(true);
@@ -74,8 +81,7 @@ const App: React.FC = () => {
             fetchedAttendance,
             fetchedCash,
             fetchedPositions,
-            fetchedDepts,
-            fetchedNews
+            fetchedDepts
           ] = await Promise.all([
             Database.getSettings(),
             Database.getEmployees(),
@@ -84,19 +90,34 @@ const App: React.FC = () => {
             Database.getAttendanceLogs(),
             Database.getCashHistory(),
             Database.getPositions(),
-            Database.getDepartments(),
-            Database.getNews()
+            Database.getDepartments()
           ]);
 
           setSettings(fetchedSettings);
-          setEmployees(fetchedEmployees);
           setBranches(fetchedBranches);
           setVacations(fetchedVacations);
           setAttendanceLogs(fetchedAttendance);
           setCashHistory(fetchedCash);
           setPositions(fetchedPositions);
           setDepartments(fetchedDepts);
-          setNews(fetchedNews);
+
+          // VACATION RESET LOGIC FOR ALL EMPLOYEES (Admin check)
+          let finalEmployees = fetchedEmployees;
+          if (profile.role === 'Admin') {
+            const needsReset = fetchedEmployees.filter(e => !e.lastVacationResetYear || e.lastVacationResetYear < currentYear);
+            if (needsReset.length > 0) {
+              const resetEmployees = fetchedEmployees.map(e => {
+                if (!e.lastVacationResetYear || e.lastVacationResetYear < currentYear) {
+                  return { ...e, vacationDaysUsed: 0, lastVacationResetYear: currentYear };
+                }
+                return e;
+              });
+              await Database.setEmployees(resetEmployees);
+              finalEmployees = resetEmployees;
+              console.log(`[Vacation] Global annual reset applied for ${needsReset.length} employees.`);
+            }
+          }
+          setEmployees(finalEmployees);
 
           // Handle Branch Selector Logic
           const branchSelectorEnabled = (fetchedSettings.branchSelectorEnabledDepartments || []).includes(profile.department);
@@ -295,17 +316,6 @@ const App: React.FC = () => {
     setCashHistory(cashHistory.filter(c => c.id !== id));
   };
 
-  const handleSaveNews = async (newsItem: NewsItem) => {
-    await Database.saveNews(newsItem);
-    const updated = await Database.getNews();
-    setNews(updated);
-  };
-
-  const handleDeleteNews = async (id: string) => {
-    await Database.deleteNews(id);
-    setNews(news.filter(n => n.id !== id));
-  };
-
   const isModuleAllowed = (view: View) => {
     if (!settings) return false;
     return (settings.rolePermissions[user.role] || []).includes(view);
@@ -353,7 +363,6 @@ const App: React.FC = () => {
           <Dashboard 
             user={user} 
             employees={employees}
-            news={news}
             onUpdateUser={updateUserInfo} 
             onAddRecord={handleUpdateAttendance}
             isAttendanceEnabled={!!isAttendanceEnabledForUser}
@@ -369,7 +378,7 @@ const App: React.FC = () => {
       case View.COMPANY_STRUCTURE: return <CompanyStructureModule branches={branches} onUpdateBranches={handleUpdateBranches} onDeleteBranch={handleDeleteBranch} positions={positions} onUpdatePositions={handleUpdatePositions} onDeletePosition={handleDeletePosition} departments={departments} onUpdateDepartments={handleUpdateDepartments} settings={settings} onUpdateSettings={handleUpdateSettings} />;
       case View.VACATIONS: return < VacationManagement user={user} employees={employees} onUpdateEmployees={handleUpdateEmployees} vacations={vacations} onSaveVacation={handleSaveVacation} onDeleteVacation={handleDeleteVacation} settings={settings} />;
       case View.PROFILE: return <ProfileModule user={user} onUpdateUser={updateUserInfo} settings={settings} canEditBirthday={canEditBirthday} onBirthdayChange={handleBirthdayChange} />;
-      case View.ADMIN: return <AdminPanel user={user} settings={settings} onUpdateSettings={handleUpdateSettings} employees={employees} onUpdateEmployees={handleUpdateEmployees} news={news} onSaveNews={handleSaveNews} onDeleteNews={handleDeleteNews} />;
+      case View.ADMIN: return <AdminPanel user={user} settings={settings} onUpdateSettings={handleUpdateSettings} employees={employees} onUpdateEmployees={handleUpdateEmployees} />;
       default: return null;
     }
   };
@@ -419,8 +428,6 @@ const App: React.FC = () => {
           </div>
         </div>
       </main>
-
-      <AIChat />
 
       {/* Branch Selector Popup Module */}
       {showBranchPopup && (

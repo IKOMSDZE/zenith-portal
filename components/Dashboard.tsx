@@ -1,13 +1,11 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, View, AttendanceRecord, BranchConfig, NewsItem } from '../types';
+import { User, View, AttendanceRecord, BranchConfig } from '../types';
 import { Icons } from '../constants';
-import NewsFeed from './NewsFeed';
 
 interface DashboardProps {
   user: User;
   employees: User[];
-  news: NewsItem[];
   onUpdateUser: (updates: Partial<User>) => void;
   onAddRecord: (record: AttendanceRecord) => void;
   isAttendanceEnabled: boolean;
@@ -19,7 +17,6 @@ interface DashboardProps {
 const Dashboard: React.FC<DashboardProps> = ({
   user,
   employees,
-  news,
   onUpdateUser,
   onAddRecord,
   isAttendanceEnabled,
@@ -57,8 +54,7 @@ const Dashboard: React.FC<DashboardProps> = ({
   };
 
   const handleArrive = async () => {
-    const canCheckIn = isAttendanceEnabled || user.role === 'Admin';
-    if (hasCheckedInToday || !user.branch || !canCheckIn) return;
+    if (hasCheckedInToday || !user.branch || !isAttendanceEnabled) return;
     
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
@@ -76,30 +72,6 @@ const Dashboard: React.FC<DashboardProps> = ({
     await onAddRecord(newRecord);
     await onUpdateUser({ checkedIn: true, lastCheckIn: timeStr });
   };
-
-  const upcomingBirthdays = useMemo(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    return employees
-      .filter(e => e.birthday)
-      .map(e => {
-        const [year, month, day] = e.birthday!.split('-').map(Number);
-        const birthdayDate = new Date(today.getFullYear(), month - 1, day);
-        
-        if (birthdayDate < today) {
-          birthdayDate.setFullYear(today.getFullYear() + 1);
-        }
-        
-        return { 
-          employee: e, 
-          nextBirthday: birthdayDate,
-          daysLeft: Math.ceil((birthdayDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24))
-        };
-      })
-      .filter(item => item.daysLeft <= 5)
-      .sort((a, b) => a.daysLeft - b.daysLeft);
-  }, [employees]);
 
   const myRecentAttendance = useMemo(() => {
     return attendanceLogs
@@ -136,76 +108,76 @@ const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        {/* Top Left: Arrive Section */}
-        <div className="lg:col-span-8">
-          <div className="bg-white rounded-[5px] h-full p-10 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-12">
-            <div className="flex-1 space-y-10">
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tight leading-none">სამუშაო გრაფიკი</h3>
-                  {hasCheckedInToday && (
-                    <span className="text-[9px] font-black bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full uppercase tracking-widest">დასრულებული</span>
-                  )}
-                </div>
-                <p className="text-sm text-slate-500 font-bold leading-relaxed max-w-sm uppercase tracking-wide">
-                  დღეს თქვენი სამუშაო ლოკაციაა <span className="text-indigo-600 font-black">{user.branch || '—'}</span>. 
-                  გთხოვთ დააფიქსიროთ მოსვლა სისტემაში.
-                </p>
-              </div>
-
-              {hasCheckedInToday && (
-                <div className="flex items-center gap-5 text-emerald-600 bg-emerald-50 w-fit px-8 py-5 rounded-[5px] border border-emerald-100 animate-in zoom-in-95 shadow-sm">
-                  <div className="w-12 h-12 rounded-[5px] bg-emerald-100 flex items-center justify-center scale-110">
-                    <Icons.Check />
+      {/* Clock-in section only displayed if enabled for user's department */}
+      {isAttendanceEnabled && (
+        <div className="grid grid-cols-1 gap-8">
+          <div className="w-full">
+            <div className="bg-white rounded-[5px] p-10 border border-slate-200 shadow-sm flex flex-col md:flex-row items-center gap-12">
+              <div className="flex-1 space-y-10">
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <h3 className="text-2xl font-black text-slate-900 uppercase tracking-tight leading-none">სამუშაო გრაფიკი</h3>
+                    {hasCheckedInToday && (
+                      <span className="text-[9px] font-black bg-emerald-100 text-emerald-600 px-3 py-1 rounded-full uppercase tracking-widest">დასრულებული</span>
+                    )}
                   </div>
-                  <div className="space-y-1">
-                    <p className="text-[10px] font-black uppercase tracking-widest opacity-60">მოსვლა დაფიქსირდა</p>
-                    <p className="text-lg font-black uppercase tracking-widest tabular-nums leading-none">{user.lastCheckIn}</p>
+                  <p className="text-sm text-slate-500 font-bold leading-relaxed max-w-sm uppercase tracking-wide">
+                    დღეს თქვენი სამუშაო ლოკაციაა <span className="text-indigo-600 font-black">{user.branch || '—'}</span>. 
+                    გთხოვთ დააფიქსიროთ მოსვლა სისტემაში.
+                  </p>
+                </div>
+
+                {hasCheckedInToday && (
+                  <div className="flex items-center gap-5 text-emerald-600 bg-emerald-50 w-fit px-8 py-5 rounded-[5px] border border-emerald-100 animate-in zoom-in-95 shadow-sm">
+                    <div className="w-12 h-12 rounded-[5px] bg-emerald-100 flex items-center justify-center scale-110">
+                      <Icons.Check />
+                    </div>
+                    <div className="space-y-1">
+                      <p className="text-[10px] font-black uppercase tracking-widest opacity-60">მოსვლა დაფიქსირდა</p>
+                      <p className="text-lg font-black uppercase tracking-widest tabular-nums leading-none">{user.lastCheckIn}</p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-6">
+                  <div className="p-6 bg-slate-50 rounded-[5px] border border-slate-100 space-y-2">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">დეპარტამენტი</p>
+                    <p className="text-xs font-black text-slate-800 uppercase leading-none">{user.department}</p>
+                  </div>
+                  <div className="p-6 bg-slate-50 rounded-[5px] border border-slate-100 space-y-2">
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">პოზიცია</p>
+                    <p className="text-xs font-black text-slate-800 uppercase truncate leading-none" title={user.position}>{user.position}</p>
                   </div>
                 </div>
-              )}
-
-              <div className="grid grid-cols-2 gap-6">
-                <div className="p-6 bg-slate-50 rounded-[5px] border border-slate-100 space-y-2">
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">დეპარტამენტი</p>
-                   <p className="text-xs font-black text-slate-800 uppercase leading-none">{user.department}</p>
-                </div>
-                <div className="p-6 bg-slate-50 rounded-[5px] border border-slate-100 space-y-2">
-                   <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">პოზიცია</p>
-                   <p className="text-xs font-black text-slate-800 uppercase truncate leading-none" title={user.position}>{user.position}</p>
-                </div>
               </div>
-            </div>
-            
-            <div className="relative group p-4">
-              <button 
-                onClick={handleArrive}
-                disabled={!user.branch || hasCheckedInToday}
-                className={`relative w-64 h-64 rounded-[5px] border-4 flex flex-col items-center justify-center gap-4 transition-all shadow-2xl active:scale-95
-                  ${hasCheckedInToday 
-                    ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed' 
-                    : 'bg-indigo-600 border-indigo-500 text-white hover:bg-indigo-700 hover:border-indigo-600'}`}
-              >
-                <div className={`${hasCheckedInToday ? 'scale-110' : 'scale-[1.8]'} mb-2 transition-transform duration-300`}>
-                  {hasCheckedInToday ? <Icons.Check /> : <Icons.Clock />}
-                </div>
-                <span className="text-2xl font-black uppercase tracking-widest leading-none">
-                  {hasCheckedInToday ? 'მოვედი' : 'დაწყება'}
-                </span>
-                <span className="text-[11px] opacity-60 font-black uppercase tracking-widest leading-none">
-                  {hasCheckedInToday ? 'COMPLETED' : 'CLOCK IN'}
-                </span>
-              </button>
+              
+              <div className="relative group p-4">
+                <button 
+                  onClick={handleArrive}
+                  disabled={!user.branch || hasCheckedInToday}
+                  className={`relative w-64 h-64 rounded-[5px] border-4 flex flex-col items-center justify-center gap-4 transition-all shadow-2xl active:scale-95
+                    ${hasCheckedInToday 
+                      ? 'bg-slate-50 border-slate-100 text-slate-300 cursor-not-allowed' 
+                      : 'bg-indigo-600 border-indigo-500 text-white hover:bg-indigo-700 hover:border-indigo-600'}`}
+                >
+                  <div className={`${hasCheckedInToday ? 'scale-110' : 'scale-[1.8]'} mb-2 transition-transform duration-300`}>
+                    {hasCheckedInToday ? <Icons.Check /> : <Icons.Clock />}
+                  </div>
+                  <span className="text-2xl font-black uppercase tracking-widest leading-none">
+                    {hasCheckedInToday ? 'მოვედი' : 'დაწყება'}
+                  </span>
+                  <span className="text-[11px] opacity-60 font-black uppercase tracking-widest leading-none">
+                    {hasCheckedInToday ? 'COMPLETED' : 'CLOCK IN'}
+                  </span>
+                </button>
+                {!user.branch && !hasCheckedInToday && (
+                  <p className="absolute -bottom-2 left-1/2 -translate-x-1/2 text-[9px] font-black text-rose-500 uppercase tracking-widest animate-pulse whitespace-nowrap">აირჩიეთ ფილიალი</p>
+                )}
+              </div>
             </div>
           </div>
         </div>
-
-        {/* Top Right: NewsFeed Card */}
-        <div className="lg:col-span-4 h-full">
-          <NewsFeed news={news} />
-        </div>
-      </div>
+      )}
 
       {/* Stats and Activity Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">

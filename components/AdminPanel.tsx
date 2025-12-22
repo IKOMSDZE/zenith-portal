@@ -1,9 +1,10 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Icons } from '../constants';
-import { User, UserRole, View, NewsItem } from '../types';
+import { User, UserRole, View } from '../types';
 import { Database, SystemSettings, CustomFont, SMSLog } from '../services/database';
 import { SMSService } from '../services/smsService';
+import { MigrationService } from '../services/migrationService';
 
 const ROLES: UserRole[] = ['Admin', 'Manager', 'Editor', 'Accountant', 'Employee', 'HR'];
 
@@ -26,22 +27,14 @@ interface AdminPanelProps {
   onUpdateSettings: (newSettings: SystemSettings) => void;
   employees: User[];
   onUpdateEmployees: (newEmployees: User[]) => void;
-  news: NewsItem[];
-  onSaveNews: (item: NewsItem) => Promise<void>;
-  onDeleteNews: (id: string) => Promise<void>;
 }
 
-const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSettings, employees, onUpdateEmployees, news, onSaveNews, onDeleteNews }) => {
-  const [activeTab, setActiveTab] = useState<'branding' | 'permissions' | 'sms' | 'news'>('branding');
+const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSettings, employees, onUpdateEmployees }) => {
+  const [activeTab, setActiveTab] = useState<'branding' | 'permissions' | 'sms' | 'migration'>('branding');
   const [isSendingTest, setIsSendingTest] = useState(false);
   const [smsLogs, setSmsLogs] = useState<SMSLog[]>([]);
-
-  // News form state
-  const [newsForm, setNewsForm] = useState<Partial<NewsItem>>({
-    title: '',
-    content: '',
-    type: 'Info'
-  });
+  const [migrationReport, setMigrationReport] = useState<any>(null);
+  const [isMigrating, setIsMigrating] = useState(false);
 
   const logoInputRef = useRef<HTMLInputElement>(null);
   const faviconInputRef = useRef<HTMLInputElement>(null);
@@ -106,22 +99,22 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSetting
     }
   };
 
-  const handleNewsSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newsForm.title || !newsForm.content) return;
-    
-    const newItem: NewsItem = {
-      id: `news-${Date.now()}`,
-      title: newsForm.title,
-      content: newsForm.content,
-      type: (newsForm.type as any) || 'Info',
-      date: new Date().toLocaleDateString('ka-GE'),
-      author: user.name
-    };
-    
-    await onSaveNews(newItem);
-    setNewsForm({ title: '', content: '', type: 'Info' });
-    alert('სიახლე დამატებულია');
+  const handleRunMigration = async () => {
+    if (!user.uid) return;
+    setIsMigrating(true);
+    try {
+      const report = await MigrationService.migrateLocalData(user.uid);
+      setMigrationReport(report);
+      if (report.success) {
+        alert("მიგრაცია წარმატებით დასრულდა!");
+      } else {
+        alert("მიგრაციისას დაფიქსირდა შეცდომები. იხილეთ რეპორტი.");
+      }
+    } catch (err) {
+      alert("კრიტიკული შეცდომა მიგრაციისას.");
+    } finally {
+      setIsMigrating(false);
+    }
   };
 
   return (
@@ -135,7 +128,7 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSetting
           <button onClick={() => setActiveTab('branding')} className={`px-4 py-1.5 rounded-[5px] text-[10px] font-black uppercase transition-all whitespace-nowrap ${activeTab === 'branding' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>ბრენდინგი</button>
           <button onClick={() => setActiveTab('sms')} className={`px-4 py-1.5 rounded-[5px] text-[10px] font-black uppercase transition-all whitespace-nowrap ${activeTab === 'sms' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>SMS</button>
           <button onClick={() => setActiveTab('permissions')} className={`px-4 py-1.5 rounded-[5px] text-[10px] font-black uppercase transition-all whitespace-nowrap ${activeTab === 'permissions' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>წვდომები</button>
-          <button onClick={() => setActiveTab('news')} className={`px-4 py-1.5 rounded-[5px] text-[10px] font-black uppercase transition-all whitespace-nowrap ${activeTab === 'news' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>სიახლეები</button>
+          <button onClick={() => setActiveTab('migration')} className={`px-4 py-1.5 rounded-[5px] text-[10px] font-black uppercase transition-all whitespace-nowrap ${activeTab === 'migration' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}>მონაცემთა მიგრაცია</button>
         </div>
       </div>
 
@@ -383,14 +376,36 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSetting
               <thead><tr className="bg-slate-50 text-slate-400 text-[9px] font-black uppercase border-b border-slate-100 tracking-widest"><th className="px-8 py-6">მოდული</th>{ROLES.map(role => <th key={role} className="px-8 py-6 text-center">{role}</th>)}</tr></thead>
               <tbody className="divide-y divide-slate-50">
                 {Object.values(View).map((view) => (
-                  <tr key={view} className="hover:bg-slate-50/50"><td className="px-8 py-6 font-black text-[11px] text-slate-700 uppercase tracking-tight">{VIEW_LABELS[view]}</td>
+                  <tr key={view} className="hover:bg-slate-50/50">
+                    <td className="px-8 py-6 font-black text-[11px] text-slate-700 uppercase tracking-tight">{VIEW_LABELS[view]}</td>
                     {ROLES.map(role => {
-                      const isEnabled = settings.rolePermissions[role]?.includes(view);
-                      return (<td key={`${role}-${view}`} className="px-8 py-6 text-center"><button onClick={() => {
-                        const current = settings.rolePermissions[role] || [];
-                        const updated = current.includes(view) ? current.filter(v => v !== view) : [...current, view];
-                        onUpdateSettings({ ...settings, rolePermissions: { ...settings.rolePermissions, [role]: updated } });
-                      }} className={`w-6 h-6 rounded-[5px] border-2 flex items-center justify-center mx-auto transition-all ${isEnabled ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-slate-200'}`}><Icons.Check /></button></td>);
+                      // CORE LOGIC: Admin role must always have access to the Admin panel.
+                      const isProtected = role === 'Admin' && view === View.ADMIN;
+                      const isEnabled = isProtected || (settings.rolePermissions[role] || []).includes(view);
+                      
+                      return (
+                        <td key={`${role}-${view}`} className="px-8 py-6 text-center">
+                          <button 
+                            onClick={() => {
+                              if (isProtected) return; // Prevent disabling
+                              const current = settings.rolePermissions[role] || [];
+                              const updated = current.includes(view) 
+                                ? current.filter(v => v !== view) 
+                                : [...current, view];
+                              onUpdateSettings({ 
+                                ...settings, 
+                                rolePermissions: { ...settings.rolePermissions, [role]: updated } 
+                              });
+                            }} 
+                            className={`w-6 h-6 rounded-[5px] border-2 flex items-center justify-center mx-auto transition-all 
+                              ${isEnabled ? 'bg-indigo-600 border-indigo-600 text-white shadow-md' : 'bg-white border-slate-200'}
+                              ${isProtected ? 'opacity-40 cursor-not-allowed border-indigo-300' : 'hover:border-indigo-400'}`}
+                            title={isProtected ? "ადმინის წვდომა ადმინ პანელზე აუცილებელია" : ""}
+                          >
+                            <Icons.Check />
+                          </button>
+                        </td>
+                      );
                     })}
                   </tr>
                 ))}
@@ -400,86 +415,74 @@ const AdminPanel: React.FC<AdminPanelProps> = ({ user, settings, onUpdateSetting
         </section>
       )}
 
-      {activeTab === 'news' && (
+      {activeTab === 'migration' && (
         <div className="space-y-6">
           <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden p-10">
-            <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest mb-8">სიახლის გამოქვეყნება</h3>
-            <form onSubmit={handleNewsSubmit} className="space-y-6 max-w-2xl">
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-1">სათაური</label>
-                <input 
-                  type="text" 
-                  value={newsForm.title} 
-                  onChange={e => setNewsForm({...newsForm, title: e.target.value})}
-                  placeholder="მაგ: ახალი ფილიალი ბათუმში"
-                  className="w-full bg-slate-50 border border-slate-200 px-5 py-3 rounded-[5px] text-sm font-black outline-none focus:border-indigo-600"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-6">
-                <div className="space-y-2">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-1">ტიპი</label>
-                  <select 
-                    value={newsForm.type} 
-                    onChange={e => setNewsForm({...newsForm, type: e.target.value as any})}
-                    className="w-full bg-slate-50 border border-slate-200 px-5 py-3 rounded-[5px] text-sm font-black outline-none"
-                  >
-                    <option value="Info">ინფორმაცია</option>
-                    <option value="Success">წარმატება</option>
-                    <option value="Alert">ყურადღება</option>
-                  </select>
-                </div>
-              </div>
-              <div className="space-y-2">
-                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block ml-1">შინაარსი</label>
-                <textarea 
-                  rows={4} 
-                  value={newsForm.content} 
-                  onChange={e => setNewsForm({...newsForm, content: e.target.value})}
-                  placeholder="აღწერეთ სიახლე..."
-                  className="w-full bg-slate-50 border border-slate-200 px-5 py-4 rounded-[5px] text-sm font-bold outline-none focus:border-indigo-600 resize-none"
-                />
+            <div className="flex items-center justify-between mb-8">
+              <div>
+                <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest">მონაცემთა ღრუბლოვანი სინქრონიზაცია</h3>
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight mt-1">ადგილობრივი ბაზის გადატანა Firestore-ში</p>
               </div>
               <button 
-                type="submit"
-                className="px-12 py-4 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-xl active:scale-95"
+                onClick={handleRunMigration}
+                disabled={isMigrating}
+                className="px-12 py-4 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all shadow-xl shadow-indigo-100 flex items-center gap-3 disabled:opacity-50"
               >
-                გამოქვეყნება
+                {isMigrating ? (
+                  <span className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin"></span>
+                ) : <Icons.Dashboard />}
+                {isMigrating ? 'მიმდინარეობს მიგრაცია...' : 'სინქრონიზაციის დაწყება'}
               </button>
-            </form>
-          </section>
+            </div>
 
-          <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-            <div className="p-8 border-b border-slate-100 bg-slate-50">
-              <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest">არსებული სიახლეები</h3>
-            </div>
-            <div className="divide-y divide-slate-50">
-              {news.map(item => (
-                <div key={item.id} className="p-8 flex items-start justify-between group">
+            <div className="bg-amber-50 border border-amber-100 p-6 rounded-[5px] mb-10">
+               <div className="flex gap-4">
+                  <div className="text-amber-500"><Icons.Alert /></div>
                   <div className="space-y-2">
-                    <div className="flex items-center gap-3">
-                      <span className={`text-[8px] font-black px-2 py-0.5 rounded-[3px] uppercase tracking-widest ${
-                        item.type === 'Success' ? 'bg-emerald-50 text-emerald-600' :
-                        item.type === 'Alert' ? 'bg-amber-50 text-amber-600' : 'bg-indigo-50 text-indigo-600'
-                      }`}>
-                        {item.type}
-                      </span>
-                      <span className="text-[9px] font-bold text-slate-400 uppercase">{item.date}</span>
-                    </div>
-                    <h4 className="text-sm font-black text-slate-900 uppercase">{item.title}</h4>
-                    <p className="text-xs text-slate-500 font-bold max-w-2xl">{item.content}</p>
+                     <p className="text-[11px] font-black text-amber-800 uppercase tracking-widest">ყურადღება!</p>
+                     <p className="text-[10px] font-bold text-amber-700 leading-relaxed uppercase">
+                        ეს პროცესი თქვენს ბრაუზერში შენახულ მონაცემებს (LocalStorage) გადაიტანს Google Firestore-ის ღრუბლოვან სერვერზე. 
+                        სინქრონიზაციის შემდეგ ადგილობრივი ასლი წაიშლება მონაცემთა დუბლირების თავიდან ასაცილებლად.
+                     </p>
                   </div>
-                  <button 
-                    onClick={() => onDeleteNews(item.id)}
-                    className="p-3 text-slate-300 hover:text-rose-500 transition-colors opacity-0 group-hover:opacity-100"
-                  >
-                    <Icons.Trash />
-                  </button>
-                </div>
-              ))}
-              {news.length === 0 && (
-                <div className="p-12 text-center text-slate-300 font-black text-[10px] uppercase italic">სიახლეები არ არის</div>
-              )}
+               </div>
             </div>
+
+            {migrationReport && (
+              <div className="space-y-6 animate-in fade-in duration-500">
+                <div className={`p-6 rounded-[5px] border ${migrationReport.success ? 'bg-emerald-50 border-emerald-100' : 'bg-rose-50 border-rose-100'}`}>
+                   <h4 className={`text-[11px] font-black uppercase tracking-widest ${migrationReport.success ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {migrationReport.success ? 'მიგრაციის ანგარიში (წარმატებული)' : 'მიგრაციის ანგარიში (შეცდომებით)'}
+                   </h4>
+                   <p className="text-[9px] font-bold text-slate-400 uppercase mt-1 tracking-widest">დასრულების დრო: {new Date(migrationReport.timestamp).toLocaleString('ka-GE')}</p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                   {Object.entries(migrationReport.itemsMigrated).map(([key, value]: [string, any]) => (
+                     <div key={key} className="p-4 bg-white border border-slate-100 rounded-[5px] shadow-sm flex items-center justify-between">
+                        <span className="text-[9px] font-black text-slate-500 uppercase tracking-widest">{key}</span>
+                        <div className="flex items-center gap-2">
+                           <span className="text-xs font-black text-slate-900">{typeof value === 'boolean' ? (value ? 'YES' : 'NO') : value}</span>
+                           {((typeof value === 'number' && value > 0) || (typeof value === 'boolean' && value)) && (
+                             <span className="text-emerald-500 scale-75"><Icons.Check /></span>
+                           )}
+                        </div>
+                     </div>
+                   ))}
+                </div>
+
+                {migrationReport.errors.length > 0 && (
+                  <div className="p-6 bg-slate-50 border border-slate-200 rounded-[5px] space-y-3">
+                     <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">დაფიქსირებული შეცდომები:</p>
+                     <ul className="space-y-1">
+                        {migrationReport.errors.map((err: string, i: number) => (
+                          <li key={i} className="text-[10px] font-bold text-slate-600 list-disc ml-4">{err}</li>
+                        ))}
+                     </ul>
+                  </div>
+                )}
+              </div>
+            )}
           </section>
         </div>
       )}

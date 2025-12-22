@@ -21,6 +21,17 @@ export type UserRole = 'Admin' | 'Manager' | 'Editor' | 'Accountant' | 'Employee
 
 export type VacationStatus = 'Pending' | 'Approved' | 'Rejected';
 
+/**
+ * NewsItem interface for company news feed
+ */
+export interface NewsItem {
+  id: string;
+  title: string;
+  content: string;
+  date: string;
+  type: 'Success' | 'Alert' | 'Update';
+}
+
 export interface PositionMapping {
   title: string;
   department: string;
@@ -39,15 +50,6 @@ export interface VacationRecord {
   changer: string;
   manager: string;
   status: VacationStatus;
-}
-
-export interface NewsItem {
-  id: string;
-  title: string;
-  date: string;
-  content: string;
-  type: 'Success' | 'Alert' | 'Info';
-  author?: string;
 }
 
 export interface CashDeskRecord {
@@ -81,6 +83,7 @@ export interface User {
   branch?: string;
   vacationDaysTotal: number;
   vacationDaysUsed: number;
+  lastVacationResetYear?: number;
   birthday?: string;
   lastBirthdayUpdate?: string;
   jobStartDate?: string;

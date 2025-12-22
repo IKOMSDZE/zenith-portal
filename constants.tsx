@@ -27,7 +27,9 @@ export const OFFICIAL_POSITIONS: PositionMapping[] = [
 
 export const BRANCH_STAFF_POSITIONS = ['Shop manager', 'Shop consultant'];
 
-const DEFAULT_PASS = '1234';
+const DEFAULT_PASS = '123456';
+
+const CURRENT_YEAR = new Date().getFullYear();
 
 export const MOCK_USER: User = {
   id: 'EMP-001',
@@ -40,6 +42,7 @@ export const MOCK_USER: User = {
   branch: 'Vazha pshavela',
   vacationDaysTotal: 24,
   vacationDaysUsed: 5,
+  lastVacationResetYear: CURRENT_YEAR,
   birthday: '1990-05-15',
   jobStartDate: '2021-01-10',
   position: 'Lead Developer',
@@ -63,6 +66,7 @@ export const MOCK_EMPLOYEES: User[] = [
     branch: 'East point',
     vacationDaysTotal: 24,
     vacationDaysUsed: 2,
+    lastVacationResetYear: CURRENT_YEAR,
     position: 'Lead Developer',
     email: 'sarah@portal.ge',
     personalId: '02020202020',
@@ -78,6 +82,7 @@ export const MOCK_EMPLOYEES: User[] = [
     branch: 'Gldani',
     vacationDaysTotal: 24,
     vacationDaysUsed: 10,
+    lastVacationResetYear: CURRENT_YEAR,
     position: 'HR Manager',
     email: 'marcus@portal.ge',
     personalId: '03030303030',
@@ -94,6 +99,7 @@ export const MOCK_EMPLOYEES: User[] = [
     branch: 'Batumi',
     vacationDaysTotal: 24,
     vacationDaysUsed: 0,
+    lastVacationResetYear: CURRENT_YEAR,
     position: 'Shop consultant',
     email: 'elena@portal.ge',
     personalId: '04040404040',

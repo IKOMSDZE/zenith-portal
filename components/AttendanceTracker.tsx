@@ -23,7 +23,6 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   onDeleteRecord
 }) => {
   const [currentTime, setCurrentTime] = useState(new Date());
-  // Fixed: Database.getSettings() is async, should be fetched in useEffect
   const [settings, setSettings] = useState<SystemSettings | null>(null);
 
   useEffect(() => {
@@ -84,56 +83,59 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
   };
 
+  // If attendance is not enabled, we hide the entire component or just the tracker card
+  if (settings && !isAttendanceEnabled) {
+    return null;
+  }
+
   return (
     <div className="space-y-6 max-w-4xl mx-auto">
-      {isAttendanceEnabled && (
-        <div className="bg-white rounded-[5px] shadow-sm border border-slate-200 p-12 flex flex-col items-center text-center relative overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500">
-          <div className="absolute top-0 left-0 w-full h-1 bg-slate-100">
-             {hasCheckedInToday && <div className="h-full bg-emerald-500 w-full"></div>}
-          </div>
-
-          <div className="mb-6">
-             <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border border-slate-100 rounded-[5px]">
-                <span className={`w-2 h-2 rounded-full ${hasCheckedInToday ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
-                <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest">
-                  {user.branch || 'ფილიალი არაა არჩეული'}
-                </span>
-             </div>
-          </div>
-
-          <div className="mb-10">
-            <h2 className="text-6xl font-black text-slate-900 tracking-tight tabular-nums leading-none">
-              {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-            </h2>
-            <p className="text-slate-400 mt-3 font-bold text-[11px] uppercase tracking-widest">
-              {currentTime.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
-            </p>
-          </div>
-
-          <div className="w-full max-w-xs space-y-4">
-            <button 
-              onClick={handleArrive} 
-              disabled={!user.branch || hasCheckedInToday} 
-              className={`w-full py-6 rounded-[5px] font-black text-xl transition-all shadow-md active:scale-95 uppercase tracking-widest border-2 flex items-center justify-center gap-3
-                ${hasCheckedInToday 
-                  ? 'bg-emerald-50 text-emerald-500 border-emerald-100 cursor-not-allowed' 
-                  : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'}`}
-            >
-              {hasCheckedInToday ? <Icons.Check /> : <Icons.Clock />}
-              {hasCheckedInToday ? 'მოსვლა დაფიქსირებულია' : 'მოვედი'}
-            </button>
-            
-            {!user.branch && (
-              <p className="text-[10px] font-black text-rose-500 uppercase animate-pulse">გთხოვთ აირჩიოთ ფილიალი</p>
-            )}
-          </div>
+      <div className="bg-white rounded-[5px] shadow-sm border border-slate-200 p-12 flex flex-col items-center text-center relative overflow-hidden animate-in fade-in slide-in-from-top-4 duration-500">
+        <div className="absolute top-0 left-0 w-full h-1 bg-slate-100">
+           {hasCheckedInToday && <div className="h-full bg-emerald-500 w-full"></div>}
         </div>
-      )}
+
+        <div className="mb-6">
+           <div className="flex items-center gap-2 px-4 py-1.5 bg-slate-50 border border-slate-100 rounded-[5px]">
+              <span className={`w-2 h-2 rounded-full ${hasCheckedInToday ? 'bg-emerald-500' : 'bg-slate-300'}`}></span>
+              <span className="text-[11px] font-black text-slate-600 uppercase tracking-widest">
+                {user.branch || 'ფილიალი არაა არჩეული'}
+              </span>
+           </div>
+        </div>
+
+        <div className="mb-10">
+          <h2 className="text-6xl font-black text-slate-900 tracking-tight tabular-nums leading-none">
+            {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+          </h2>
+          <p className="text-slate-400 mt-3 font-bold text-[11px] uppercase tracking-widest">
+            {currentTime.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+          </p>
+        </div>
+
+        <div className="w-full max-w-xs space-y-4">
+          <button 
+            onClick={handleArrive} 
+            disabled={!user.branch || hasCheckedInToday} 
+            className={`w-full py-6 rounded-[5px] font-black text-xl transition-all shadow-md active:scale-95 uppercase tracking-widest border-2 flex items-center justify-center gap-3
+              ${hasCheckedInToday 
+                ? 'bg-emerald-50 text-emerald-500 border-emerald-100 cursor-not-allowed' 
+                : 'bg-indigo-600 text-white border-indigo-600 hover:bg-indigo-700'}`}
+          >
+            {hasCheckedInToday ? <Icons.Check /> : <Icons.Clock />}
+            {hasCheckedInToday ? 'მოსვლა დაფიქსირებულია' : 'მოვედი'}
+          </button>
+          
+          {!user.branch && (
+            <p className="text-[10px] font-black text-rose-500 uppercase animate-pulse">გთხოვთ აირჩიოთ ფილიალი</p>
+          )}
+        </div>
+      </div>
 
       <div className="bg-white rounded-[5px] shadow-sm border border-slate-200 overflow-hidden">
         <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
           <h3 className="font-black text-slate-800 text-[10px] uppercase tracking-widest flex items-center gap-2">
-            <Icons.Clock /> {isAttendanceEnabled ? 'ბოლო აქტივობა' : 'დასწრების ისტორია'}
+            <Icons.Clock /> ბოლო აქტივობა
           </h3>
         </div>
         <div className="overflow-x-auto">

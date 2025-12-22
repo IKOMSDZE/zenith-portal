@@ -81,19 +81,24 @@ const VacationManagement: React.FC<VacationManagementProps> = ({
     if (isInsufficient) return;
 
     setIsSyncing(true);
-    const newRec: VacationRecord = { 
-      id: Math.random().toString(36).substr(2, 9), 
-      employeeId: selectedEmployee.id, 
-      employeeName: selectedEmployee.name, 
-      startDate: vacationForm.startDate, 
-      endDate: vacationForm.endDate, 
-      workingDays: Number(vacationForm.workingDays), 
-      calendarDays: Number(vacationForm.calendarDays), 
-      reason: vacationForm.reason, 
-      replacementPerson: isReplacementEnabled ? vacationForm.replacementPerson : undefined,
-      changer: user.name, 
-      manager: vacationForm.managerNote, 
-      status: 'Pending' 
+    // Explicitly type newRec as VacationRecord to avoid type inference issues with string literal unions
+    // FIX: Added explicit type annotation to satisfy VacationStatus compatibility requirements.
+    const newRec: VacationRecord = {
+      id: Math.random().toString(36).substr(2, 9),
+      employeeId: selectedEmployee.id,
+      employeeName: selectedEmployee.name,
+      startDate: vacationForm.startDate,
+      endDate: vacationForm.endDate,
+      workingDays: Number(vacationForm.workingDays),
+      calendarDays: Number(vacationForm.calendarDays),
+      reason: vacationForm.reason,
+      // Only include replacementPerson if replacement is enabled
+      ...(isReplacementEnabled && vacationForm.replacementPerson && {
+        replacementPerson: vacationForm.replacementPerson
+      }),
+      changer: user.name,
+      manager: vacationForm.managerNote,
+      status: 'Pending'
     };
 
     try {

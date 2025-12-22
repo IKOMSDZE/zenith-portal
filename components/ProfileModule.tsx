@@ -24,9 +24,9 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
   
   const [formData, setFormData] = useState<Partial<User>>({ ...user });
   const [isSaving, setIsSaving] = useState(false);
+  const [isProcessingImage, setIsProcessingImage] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   
-  // Password change states
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -34,13 +34,48 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
     setFormData({ ...user });
   }, [user]);
 
-  const handleAvatarChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Utility to compress image before syncing to Firestore
+  const compressImage = (base64Str: string): Promise<string> => {
+    return new Promise((resolve) => {
+      const img = new Image();
+      img.src = base64Str;
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        const MAX_WIDTH = 400;
+        const MAX_HEIGHT = 400;
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > MAX_WIDTH) {
+            height *= MAX_WIDTH / width;
+            width = MAX_WIDTH;
+          }
+        } else {
+          if (height > MAX_HEIGHT) {
+            width *= MAX_HEIGHT / height;
+            height = MAX_HEIGHT;
+          }
+        }
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        ctx?.drawImage(img, 0, 0, width, height);
+        resolve(canvas.toDataURL('image/jpeg', 0.7)); // High compression for Firestore sync
+      };
+    });
+  };
+
+  const handleAvatarChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
+      setIsProcessingImage(true);
       const reader = new FileReader();
-      reader.onloadend = () => {
+      reader.onloadend = async () => {
         const base64 = reader.result as string;
-        setFormData(prev => ({ ...prev, avatar: base64 }));
+        const compressed = await compressImage(base64);
+        setFormData(prev => ({ ...prev, avatar: compressed }));
+        setIsProcessingImage(false);
       };
       reader.readAsDataURL(file);
     }
@@ -57,7 +92,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
     }
 
     setIsSaving(true);
-    await new Promise(resolve => setTimeout(resolve, 800));
     
     if (formData.birthday !== user.birthday && formData.birthday) {
       await onBirthdayChange(formData.birthday);
@@ -68,7 +102,9 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
       updates.password = newPassword;
     }
     
-    onUpdateUser(updates);
+    // This triggers sync to Firebase via App.tsx -> Database.setCurrentUser
+    await onUpdateUser(updates);
+    
     setIsSaving(false);
     setSaveSuccess(true);
     setNewPassword('');
@@ -82,7 +118,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
 
   return (
     <div className="max-w-5xl mx-auto space-y-10 animate-in slide-in-from-bottom-8 duration-700 pb-32">
-      {/* Profile Identity Card */}
       <div className="bg-white rounded-[5px] shadow-sm border border-slate-200 overflow-hidden relative">
         <div className="h-56 bg-slate-900 relative overflow-hidden">
           <div className="absolute inset-0 opacity-15 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
@@ -97,12 +132,17 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
         <div className="px-12 pb-14">
           <div className="flex flex-col md:flex-row items-center md:items-end gap-12 -mt-24 relative z-10">
             <div className="relative group p-2 bg-white rounded-[5px] shadow-2xl">
-              <div className="w-48 h-48 rounded-[5px] overflow-hidden bg-slate-100 border-2 border-slate-50">
-                <img src={formData.avatar} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" alt="Avatar" />
+              <div className="w-48 h-48 rounded-[5px] overflow-hidden bg-slate-100 border-2 border-slate-50 flex items-center justify-center">
+                {isProcessingImage ? (
+                  <div className="w-8 h-8 border-4 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin"></div>
+                ) : (
+                  <img src={formData.avatar} className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110" alt="Avatar" />
+                )}
               </div>
               <button 
                 onClick={() => avatarInputRef.current?.click()}
-                className="absolute bottom-4 right-4 w-12 h-12 bg-indigo-600 text-white rounded-[5px] shadow-xl flex items-center justify-center hover:bg-indigo-700 transition-all active:scale-90"
+                disabled={isProcessingImage}
+                className="absolute bottom-4 right-4 w-12 h-12 bg-indigo-600 text-white rounded-[5px] shadow-xl flex items-center justify-center hover:bg-indigo-700 transition-all active:scale-90 disabled:opacity-50"
               >
                 <Icons.Edit />
               </button>
@@ -135,7 +175,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-10">
-        {/* Personal Details */}
         <div className="lg:col-span-7">
           <div className="bg-white rounded-[5px] p-12 border border-slate-200 shadow-sm space-y-12">
             <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-4">
@@ -203,7 +242,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
           </div>
         </div>
 
-        {/* Corporate & Security */}
         <div className="lg:col-span-5 space-y-10">
           <div className="bg-white rounded-[5px] p-12 border border-slate-200 shadow-sm space-y-12">
             <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-4">
@@ -244,7 +282,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
             </div>
           </div>
 
-          {/* Security Section */}
           <div className="bg-white rounded-[5px] p-12 border border-slate-200 shadow-sm space-y-10">
             <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-4">
               <div className="w-12 h-12 rounded-[5px] bg-rose-600 text-white flex items-center justify-center shadow-lg">
@@ -279,7 +316,6 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
         </div>
       </div>
 
-      {/* Action Footer */}
       <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-8 z-40 lg:left-64 shadow-[0_-4px_20px_-4px_rgba(0,0,0,0.05)]">
         <div className="max-w-5xl mx-auto flex items-center justify-between">
           <div className="hidden md:flex items-center gap-6">
@@ -300,9 +336,9 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
             )}
             <button 
               onClick={handleSave}
-              disabled={isSaving}
+              disabled={isSaving || isProcessingImage}
               className={`flex-1 md:flex-none px-14 py-5 rounded-[5px] font-black text-xs uppercase tracking-widest transition-all shadow-xl active:scale-95 flex items-center justify-center gap-4
-                ${isSaving 
+                ${isSaving || isProcessingImage
                   ? 'bg-slate-200 text-slate-400 cursor-not-allowed shadow-none' 
                   : 'bg-indigo-600 text-white hover:bg-indigo-700 shadow-indigo-100'}`}
             >

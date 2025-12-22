@@ -13,7 +13,7 @@ import {
   orderBy
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { User, AttendanceRecord, VacationRecord, BranchConfig, PositionMapping, CashDeskRecord, UserRole, View, NewsItem } from '../types';
+import { User, AttendanceRecord, VacationRecord, BranchConfig, PositionMapping, CashDeskRecord, UserRole, View } from '../types';
 import { MOCK_EMPLOYEES, DEFAULT_BRANCH_CONFIGS, OFFICIAL_POSITIONS, DEPARTMENTS } from '../constants';
 
 const COLLECTIONS = {
@@ -26,8 +26,7 @@ const COLLECTIONS = {
   SETTINGS: 'settings',
   CASH_HISTORY: 'cashHistory',
   SMS_LOGS: 'smsLogs',
-  BRANCH_BALANCES: 'branchBalances',
-  NEWS: 'news'
+  BRANCH_BALANCES: 'branchBalances'
 };
 
 export interface SMSLog {
@@ -124,16 +123,6 @@ export const Database = {
       
       // Departments
       batch.set(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: DEPARTMENTS });
-      
-      // Initialize sample news
-      const sampleNews: NewsItem = {
-        id: 'news-1',
-        title: 'კეთილი იყოს თქვენი მობრძანება Zenith-ში',
-        date: new Date().toLocaleDateString('ka-GE'),
-        content: 'ჩვენი ახალი პორტალი უკვე მზად არის სამუშაოდ. აქ თქვენ შეძლებთ დასწრების აღრიცხვას, შვებულების მოთხოვნას და სხვა.',
-        type: 'Info'
-      };
-      batch.set(doc(db, COLLECTIONS.NEWS, sampleNews.id), sampleNews);
 
       // Initialize a sample transaction for the cashier database
       const sampleTx: CashDeskRecord = {
@@ -330,19 +319,6 @@ export const Database = {
 
   deleteCashRecord: async (id: string) => {
     await deleteDoc(doc(db, COLLECTIONS.CASH_HISTORY, id));
-  },
-
-  getNews: async (): Promise<NewsItem[]> => {
-    const snap = await getDocs(collection(db, COLLECTIONS.NEWS));
-    return snap.docs.map(d => d.data() as NewsItem);
-  },
-
-  saveNews: async (news: NewsItem) => {
-    await setDoc(doc(db, COLLECTIONS.NEWS, news.id), news);
-  },
-
-  deleteNews: async (id: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.NEWS, id));
   },
 
   getSMSLogs: async (): Promise<SMSLog[]> => {

@@ -44,7 +44,8 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
     const cash = parseFloat(formData.cash) || 0;
     const terminal = parseFloat(formData.terminal) || 0;
     const incas = parseFloat(formData.incasation) || 0;
-    const cashBalance = openingBalance + cash - incas;
+    // Updated: Both cash and terminal sales are added to the opening balance
+    const cashBalance = openingBalance + cash + terminal - incas;
     return { cashBalance, revenue: cash + terminal, terminal, cash };
   }, [formData, openingBalance]);
 
@@ -66,7 +67,7 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
       await Database.updateBranchBalance(user.branch, calcs.cashBalance);
 
       // 2. Create the historical record
-      const record: CashDeskRecord = {
+      const record = {
         id: `TXN-${Math.random().toString(36).substr(2, 6).toUpperCase()}`,
         branch: user.branch,
         cashierId: user.id,
@@ -77,11 +78,14 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
         terminal: parseFloat(formData.terminal) || 0,
         incasation: parseFloat(formData.incasation) || 0,
         closingBalance: calcs.cashBalance,
-        cancelledCheck: formData.hasCancellation ? {
-          number: formData.checkNumber,
-          amount: parseFloat(formData.checkAmount) || 0,
-          reason: formData.cancellationReason
-        } : undefined
+        // Only include cancelledCheck if it exists
+        ...(formData.hasCancellation && {
+          cancelledCheck: {
+            number: formData.checkNumber,
+            amount: parseFloat(formData.checkAmount) || 0,
+            reason: formData.cancellationReason
+          }
+        })
       };
 
       // 3. Sync to cashHistory collection in Firestore
@@ -272,7 +276,7 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
                  <div className="space-y-5">
                     <div className="flex items-center gap-3 mb-2">
                        <span className="w-3 h-3 bg-emerald-500 rounded-full animate-pulse shadow-md"></span>
-                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">ნაღდი ფული სალაროში</p>
+                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">ბრუნვა და ნაშთი</p>
                     </div>
                     <div className="space-y-4 bg-slate-50 p-8 rounded-[5px] border border-slate-100 shadow-sm">
                        <div className="flex justify-between items-center text-[11px]">
@@ -280,8 +284,12 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
                           <span className="font-black text-slate-700 tabular-nums">{openingBalance.toFixed(2)} ₾</span>
                        </div>
                        <div className="flex justify-between items-center text-[11px]">
-                          <span className="text-slate-500 font-bold uppercase tracking-tight">ნაღდი ნავაჭრი:</span>
+                          <span className="text-slate-500 font-bold uppercase tracking-tight">ნავაჭრი (ნაღდი):</span>
                           <span className="font-black text-emerald-500 tabular-nums">+ {calcs.cash.toFixed(2)} ₾</span>
+                       </div>
+                       <div className="flex justify-between items-center text-[11px]">
+                          <span className="text-slate-500 font-bold uppercase tracking-tight">ნავაჭრი (უნაღდო):</span>
+                          <span className="font-black text-blue-500 tabular-nums">+ {calcs.terminal.toFixed(2)} ₾</span>
                        </div>
                        <div className="flex justify-between items-center text-[11px]">
                           <span className="text-slate-500 font-bold uppercase tracking-tight">ინკასაცია:</span>
@@ -289,29 +297,25 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
                        </div>
                        <div className="h-[1px] bg-slate-200 my-4"></div>
                        <div className="flex justify-between items-end pt-1">
-                          <span className="text-[10px] font-black text-slate-800 uppercase leading-none">საბოლოო:</span>
+                          <span className="text-[10px] font-black text-slate-800 uppercase leading-none">ახალი ნაშთი:</span>
                           <span className="text-3xl font-black text-indigo-600 tabular-nums leading-none">{calcs.cashBalance.toFixed(2)} ₾</span>
                        </div>
                     </div>
                  </div>
 
                  <div className="space-y-5 pt-10 border-t border-slate-100">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-none">უნაღდო ბრუნვა (ტერმინალი)</p>
+                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1 leading-none">დღიური ჯამი</p>
                     <div className="bg-slate-50 p-8 rounded-[5px] border border-slate-100 shadow-sm">
                        <div className="flex justify-between items-center text-[11px]">
-                          <span className="text-slate-500 font-bold uppercase tracking-tight">ტერმინალი:</span>
-                          <span className="text-xl font-black text-blue-600 tabular-nums leading-none">{calcs.terminal.toFixed(2)} ₾</span>
+                          <span className="text-slate-500 font-bold uppercase tracking-tight">ჯამური ნავაჭრი:</span>
+                          <span className="text-xl font-black text-slate-900 tabular-nums leading-none">{calcs.revenue.toFixed(2)} ₾</span>
                        </div>
                     </div>
                  </div>
 
                  <div className="pt-10 border-t border-slate-100 space-y-4">
-                    <div className="flex justify-between items-end">
-                      <span className="text-[11px] font-black text-slate-500 uppercase leading-none">ჯამური ნავაჭრი:</span>
-                      <span className="text-3xl font-black text-slate-900 leading-none tabular-nums">{calcs.revenue.toFixed(2)} ₾</span>
-                    </div>
-                    <p className="text-[9px] font-bold text-slate-400 italic leading-relaxed text-center mt-8 uppercase tracking-wider">
-                       დახურვისას სისტემაში განახლდება მხოლოდ ნაღდი ფულის ნაშთი.
+                    <p className="text-[9px] font-bold text-slate-400 italic leading-relaxed text-center uppercase tracking-wider">
+                       დადასტურებისას ფილიალის საწყის ნაშთს დაემატება ჯამური ნავაჭრი და გამოაკლდება ინკასაცია.
                     </p>
                  </div>
               </div>
@@ -350,10 +354,10 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
                  <div className="flex justify-between items-center text-[11px]"><span className="text-slate-400 font-black uppercase tracking-widest">ფილიალი:</span> <span className="font-black text-indigo-600 uppercase">{user.branch}</span></div>
                  <div className="h-[1px] bg-slate-100 my-6"></div>
                  <div className="flex justify-between items-center text-sm"><span className="text-slate-400 font-black uppercase tracking-widest">საწყისი ნაშთი:</span> <span className="font-black text-slate-900">{openingBalance.toFixed(2)} ₾</span></div>
-                 <div className="flex justify-between items-center text-sm"><span className="text-slate-400 font-black uppercase tracking-widest">ნაღდი ფული:</span> <span className="font-black text-emerald-600">+{calcs.cash.toFixed(2)} ₾</span></div>
+                 <div className="flex justify-between items-center text-sm"><span className="text-slate-400 font-black uppercase tracking-widest">ჯამური ნავაჭრი:</span> <span className="font-black text-emerald-600">+{calcs.revenue.toFixed(2)} ₾</span></div>
                  <div className="flex justify-between items-center text-sm"><span className="text-slate-400 font-black uppercase tracking-widest">ინკასაცია:</span> <span className="font-black text-rose-600">-{ (parseFloat(formData.incasation) || 0).toFixed(2) } ₾</span></div>
                  <div className="h-[1px] bg-slate-200 my-6"></div>
-                 <div className="flex justify-between items-end"><span className="text-slate-900 font-black uppercase tracking-widest leading-none">საბოლოო ნაშთი:</span> <span className="font-black text-indigo-600 underline text-3xl tabular-nums leading-none">{calcs.cashBalance.toFixed(2)} ₾</span></div>
+                 <div className="flex justify-between items-end"><span className="text-slate-900 font-black uppercase tracking-widest leading-none">ახალი ნაშთი:</span> <span className="font-black text-indigo-600 underline text-3xl tabular-nums leading-none">{calcs.cashBalance.toFixed(2)} ₾</span></div>
               </div>
             </div>
             <div className="p-10 bg-slate-50 flex gap-4">
