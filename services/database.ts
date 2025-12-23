@@ -262,7 +262,8 @@ export const Database = {
 
   getBranchBalance: async (branchName: string): Promise<number> => {
     const snap = await getDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
-    return snap.exists() ? (snap.data()?.amount || 0) : 0;
+    // Fixed: Cast snap.data() to any to bypass Property 'amount' does not exist on type 'unknown' error.
+    return snap.exists() ? ((snap.data() as any)?.amount || 0) : 0;
   },
 
   updateBranchBalance: async (branchName: string, newBalance: number) => {
@@ -288,7 +289,8 @@ export const Database = {
 
   getDepartments: async (): Promise<string[]> => {
     const snap = await getDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'));
-    return snap.exists() ? (snap.data()?.items || DEPARTMENTS) : DEPARTMENTS;
+    // Fixed: Cast snap.data() to any to bypass Property 'items' does not exist on type 'unknown' error.
+    return snap.exists() ? ((snap.data() as any)?.items || DEPARTMENTS) : DEPARTMENTS;
   },
 
   setDepartments: async (departments: string[]) => {

@@ -1,8 +1,9 @@
-
-import { initializeApp, getApps, getApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+// src/services/firebase.ts
+import { initializeApp } from "firebase/app";
 import { getAuth } from "firebase/auth";
+import { getFirestore } from "firebase/firestore";
 
+// Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyDffsyq4Lb1DYhAAkuEPZnZyzYjnCEiX7g",
   authDomain: "bh-portal-f120b.firebaseapp.com",
@@ -13,9 +14,27 @@ const firebaseConfig = {
   measurementId: "G-E0ZSRSBTKC"
 };
 
-// Initialize Firebase once
-const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
-const db = getFirestore(app);
+// Initialize Firebase
+const app = initializeApp(firebaseConfig);
+
+// Initialize Auth
 const auth = getAuth(app);
 
-export { app, db, auth };
+// Initialize Firestore
+const db = getFirestore(app);
+
+// Initialize Analytics (optional - only if it works)
+let analytics;
+try {
+  if (typeof window !== 'undefined') {
+    const { getAnalytics } = require("firebase/analytics");
+    analytics = getAnalytics(app);
+    console.log('✅ Analytics enabled');
+  }
+} catch (error) {
+  console.log('⚠️ Analytics not available (this is OK)');
+}
+
+console.log('✅ Firebase initialized: Auth + Firestore ready');
+
+export { auth, db, app };
