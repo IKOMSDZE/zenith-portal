@@ -7,30 +7,32 @@ export interface BranchConfig {
 
 export interface AttendanceRecord {
   id: string;
-  employeeId?: string;
-  employeeName?: string;
-  date: string;
+  employeeId: string;
+  uid: string; // Firebase Auth UID for Security Rules
+  employeeName: string;
+  employeeRole: UserRole; // Denormalized
+  department: string;    // Denormalized
+  branch: string;        // Denormalized
+  date: string;          // Format: "YYYY-MM-DD" for better sorting
   checkIn: string;
   checkOut?: string;
   status: 'Complete' | 'Active';
-  branch?: string;
-  isLate?: boolean;
+  isLate: boolean;
+}
+
+// New interface for instant reporting
+export interface BranchDailyStats {
+  id: string; // Format: "branchName_YYYY-MM-DD"
+  branch: string;
+  date: string;
+  totalPresent: number;
+  totalLate: number;
+  totalOnTime: number;
 }
 
 export type UserRole = 'Admin' | 'Manager' | 'Editor' | 'Accountant' | 'Employee' | 'HR';
 
 export type VacationStatus = 'Pending' | 'Approved' | 'Rejected';
-
-/**
- * NewsItem interface for company news feed
- */
-export interface NewsItem {
-  id: string;
-  title: string;
-  content: string;
-  date: string;
-  type: 'Success' | 'Alert' | 'Update';
-}
 
 export interface PositionMapping {
   title: string;
@@ -40,6 +42,7 @@ export interface PositionMapping {
 export interface VacationRecord {
   id: string;
   employeeId: string;
+  uid: string;
   employeeName: string;
   startDate: string;
   endDate: string;
@@ -70,6 +73,14 @@ export interface CashDeskRecord {
   };
 }
 
+export interface NewsItem {
+  id: string;
+  type: 'Success' | 'Alert' | 'Info';
+  date: string;
+  title: string;
+  content: string;
+}
+
 export interface User {
   id: string;
   uid?: string; // Firebase Auth UID
@@ -93,6 +104,8 @@ export interface User {
   personalId?: string;
   address?: string;
   password?: string;
+  // Locally calculated next birthday for dashboard display
+  nextBday?: Date;
 }
 
 export enum View {
@@ -101,6 +114,8 @@ export enum View {
   PROFILE = 'profile',
   ADMIN = 'admin',
   VACATIONS = 'vacations',
+  VACATION_FORM = 'vacation_form',
+  VACATION_REQUESTS = 'vacation_requests',
   CASHIER = 'cashier',
   COMPANY_STRUCTURE = 'company_structure',
   ATTENDANCE_REPORT = 'attendance_report',

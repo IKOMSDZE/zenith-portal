@@ -1,80 +1,81 @@
 
 import { Database } from './database';
 
+const LOG_STORAGE_KEY = 'zenith_sms_log_file';
+
 export const SMSService = {
   /**
-   * Sends an SMS via SMSOffice.ge API.
-   * To prevent "Failed to fetch" (CORS), we use mode: 'no-cors'.
-   * This sends the request to the server, but the browser does not allow reading the response.
-   * Since we only need to "fire" the SMS, this is an effective workaround for client-side apps.
+   * Appends a log entry to the virtual sms.log file in localStorage.
+   */
+  logLocally: (to: string, content: string, status: string, type: string) => {
+    const timestamp = new Date().toLocaleString('ka-GE');
+    const logLine = `[${timestamp}] [${type.toUpperCase()}] TO: ${to} | STATUS: ${status} | CONTENT: "${content}"\n`;
+    
+    const existingLogs = localStorage.getItem(LOG_STORAGE_KEY) || '';
+    // Limit log size to prevent localStorage overflow (keep last ~2000 lines)
+    const newLogs = (logLine + existingLogs).split('\n').slice(0, 2000).join('\n');
+    
+    localStorage.setItem(LOG_STORAGE_KEY, newLogs);
+    // Dispatch event so UI can update in real-time
+    window.dispatchEvent(new CustomEvent('smsLogUpdated', { detail: newLogs }));
+  },
+
+  /**
+   * Retrieves the content of the virtual sms.log file.
+   */
+  getRawLogs: (): string => {
+    return localStorage.getItem(LOG_STORAGE_KEY) || 'No logs found in sms.log';
+  },
+
+  /**
+   * Clears the local sms.log file.
+   */
+  clearLogs: () => {
+    localStorage.removeItem(LOG_STORAGE_KEY);
+    window.dispatchEvent(new CustomEvent('smsLogUpdated', { detail: '' }));
+  },
+
+  /**
+   * Sends an SMS via SMSOffice.ge API and logs to local sms.log.
    */
   send: async (to: string, content: string, type: 'Automation' | 'Test' | 'Update' = 'Test') => {
-    // Fixed: getSettings is async
     const settings = await Database.getSettings();
     const API_KEY = settings.smsApiKey || 'af211e7c34a14673b6ff4e27116a7fc1';
     const SENDER = settings.smsSenderName || 'smsoffice'; 
     
     if (!to || !content) return null;
 
-    // Handle multiple recipients separated by comma
     const recipients = to.split(',').map(n => n.trim()).filter(n => n.length > 0);
     
     const results = await Promise.all(recipients.map(async (destination) => {
-      // Clean and format phone number: remove non-digits, ensure 995 prefix
       let cleanDestination = destination.replace(/\D/g, '');
       if (cleanDestination.length === 9 && (cleanDestination.startsWith('5') || cleanDestination.startsWith('7'))) {
         cleanDestination = `995${cleanDestination}`;
       }
       
-      // The API documentation requests 'send/' with a trailing slash and 'urgent=true'
       const url = `https://smsoffice.ge/api/v2/send/?key=${API_KEY}&destination=${cleanDestination}&sender=${SENDER}&content=${encodeURIComponent(content)}&urgent=true`;
 
       try {
         console.log(`[SMS] Dispatching to ${cleanDestination}...`);
         
-        // Mode 'no-cors' allows the request to be sent even if the destination doesn't have CORS headers.
-        // It's a "fire and forget" mechanism.
         await fetch(url, { 
           mode: 'no-cors',
           method: 'GET',
           cache: 'no-cache'
         });
         
-        // Since we can't read the response in no-cors, we assume 'Dispatched' if no exception occurs
-        Database.addSMSLog({
-          to: cleanDestination,
-          content,
-          status: 'Dispatched',
-          apiMessage: 'Sent (Opaque Response)',
-          type
-        });
-        
+        SMSService.logLocally(cleanDestination, content, 'DISPATCHED', type);
         return { to: cleanDestination, status: 'Dispatched' };
       } catch (error) {
-        console.warn(`[SMS] Fetch failed for ${cleanDestination}, attempting fallback beacon...`, error);
+        console.warn(`[SMS] Fetch failed for ${cleanDestination}, attempting fallback...`, error);
         
-        // Fallback: Using Image beacon as a cross-origin proof trigger
         try {
           const img = new Image();
           img.src = url;
-          
-          Database.addSMSLog({
-            to: cleanDestination,
-            content,
-            status: 'Dispatched',
-            apiMessage: 'Sent via Beacon Fallback',
-            type
-          });
+          SMSService.logLocally(cleanDestination, content, 'DISPATCHED (FALLBACK)', type);
           return { to: cleanDestination, status: 'Dispatched' };
         } catch (fallbackError) {
-          console.error(`[SMS] Critical Error for ${cleanDestination}:`, fallbackError);
-          Database.addSMSLog({
-            to: cleanDestination,
-            content,
-            status: 'Error',
-            apiMessage: 'Network Error',
-            type
-          });
+          SMSService.logLocally(cleanDestination, content, 'ERROR', type);
           return { to: cleanDestination, status: 'Error' };
         }
       }
@@ -83,41 +84,16 @@ export const SMSService = {
     return results;
   },
 
-  /**
-   * Sends birthday notifications using templates from settings.
-   */
   sendBirthdayAlerts: async (employeeName: string, employeePhone: string) => {
-    // Fixed: getSettings is async
     const settings = await Database.getSettings();
-    
     const replaceVars = (template: string) => {
-        return (template || '')
-            .replace(/{name}/g, employeeName)
-            .replace(/{phone}/g, employeePhone || 'N/A');
+        return (template || '').replace(/{name}/g, employeeName).replace(/{phone}/g, employeePhone || 'N/A');
     };
-
     const promises = [];
-
-    // 1. Message to User
-    if (employeePhone && settings.userSmsTemplate) {
-      promises.push(SMSService.send(employeePhone, replaceVars(settings.userSmsTemplate), 'Automation'));
-    }
-
-    // 2. Message to Admin
-    if (settings.adminPhone && settings.adminSmsTemplate) {
-      promises.push(SMSService.send(settings.adminPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
-    }
-
-    // 3. Message to Accountant
-    if (settings.accountantPhone && settings.adminSmsTemplate) {
-      promises.push(SMSService.send(settings.accountantPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
-    }
-
-    // 4. Message to HR
-    if (settings.hrPhone && settings.adminSmsTemplate) {
-      promises.push(SMSService.send(settings.hrPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
-    }
-
+    if (employeePhone && settings.userSmsTemplate) promises.push(SMSService.send(employeePhone, replaceVars(settings.userSmsTemplate), 'Automation'));
+    if (settings.adminPhone && settings.adminSmsTemplate) promises.push(SMSService.send(settings.adminPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
+    if (settings.accountantPhone && settings.adminSmsTemplate) promises.push(SMSService.send(settings.accountantPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
+    if (settings.hrPhone && settings.adminSmsTemplate) promises.push(SMSService.send(settings.hrPhone, replaceVars(settings.adminSmsTemplate), 'Automation'));
     return Promise.all(promises);
   },
 

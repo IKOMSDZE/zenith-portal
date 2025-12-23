@@ -2,7 +2,7 @@
 import React from 'react';
 import { View, User } from '../types';
 import { Icons } from '../constants';
-import { SystemSettings } from '../services/database';
+import { SystemSettings, DEFAULT_ROLE_PERMISSIONS } from '../services/database';
 
 interface SidebarProps {
   activeView: View;
@@ -13,7 +13,24 @@ interface SidebarProps {
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ activeView, setView, user, logoUrl, settings }) => {
-  const allowedViews = settings.rolePermissions[user.role] || [];
+  // ROBUST PERMISSION LOGIC:
+  const getAllowedViews = (): View[] => {
+    // Admin always needs access to Admin Panel to manage the system
+    if (user.role === 'Admin') {
+      const views = (settings && settings.rolePermissions && settings.rolePermissions[user.role]) 
+        ? settings.rolePermissions[user.role] 
+        : DEFAULT_ROLE_PERMISSIONS[user.role];
+      return views.includes(View.ADMIN) ? views : [...views, View.ADMIN];
+    }
+    
+    if (settings && settings.rolePermissions && settings.rolePermissions[user.role]) {
+      return settings.rolePermissions[user.role];
+    }
+    
+    return DEFAULT_ROLE_PERMISSIONS[user.role] || [View.DASHBOARD, View.PROFILE];
+  };
+
+  const allowedViews = getAllowedViews();
   
   const navItems = [
     { id: View.DASHBOARD, label: 'მთავარი', icon: Icons.Dashboard },
@@ -23,7 +40,7 @@ const Sidebar: React.FC<SidebarProps> = ({ activeView, setView, user, logoUrl, s
     { id: View.CASHIER, label: 'სალარო', icon: Icons.Wallet },
     { id: View.VACATIONS, label: 'შვებულება', icon: Icons.Calendar },
     { id: View.COMPANY_STRUCTURE, label: 'სტრუქტურა', icon: Icons.Dashboard },
-    { id: View.ADMIN, label: 'ადმინი', icon: Icons.Admin },
+    { id: View.ADMIN, label: 'პარამეტრები', icon: Icons.Admin },
   ].filter(item => allowedViews.includes(item.id));
 
   return (

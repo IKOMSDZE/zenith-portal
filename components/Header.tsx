@@ -26,16 +26,27 @@ const Header: React.FC<HeaderProps> = ({
   onLogout,
 }) => {
   const [isProfileMenuOpen, setIsProfileMenuOpen] = useState(false);
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
     const handleClickOutside = (e: MouseEvent) => {
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
         setIsProfileMenuOpen(false);
       }
     };
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
+
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+      document.removeEventListener("mousedown", handleClickOutside);
+    };
   }, []);
 
   const viewLabels: Record<string, string> = {
@@ -66,10 +77,16 @@ const Header: React.FC<HeaderProps> = ({
         </span>
       </div>
       
-      <div className="hidden lg:block">
+      <div className="hidden lg:flex items-center gap-4">
         <p className="text-slate-400 font-black uppercase text-[10px] tracking-widest">
           {viewLabels[activeView] || activeView.replace('_', ' ')}
         </p>
+        {!isOnline && (
+          <div className="flex items-center gap-2 px-3 py-1 bg-amber-50 border border-amber-100 rounded-full animate-pulse">
+            <span className="w-1.5 h-1.5 bg-amber-500 rounded-full"></span>
+            <span className="text-[8px] font-black text-amber-600 uppercase tracking-widest">ოფლაინ რეჟიმი</span>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center space-x-6 relative" ref={menuRef}>

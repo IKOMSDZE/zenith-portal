@@ -6,7 +6,8 @@ import {
   onAuthStateChanged, 
   User as FirebaseUser,
   GoogleAuthProvider,
-  signInWithPopup
+  signInWithPopup,
+  updatePassword
 } from "firebase/auth";
 import { auth } from "./firebase";
 
@@ -23,6 +24,12 @@ export const AuthService = {
 
   signUp: async (email: string, pass: string) => {
     return createUserWithEmailAndPassword(auth, email.trim(), pass);
+  },
+
+  updateUserPassword: async (newPass: string) => {
+    const user = auth.currentUser;
+    if (!user) throw new Error("მომხმარებელი არ არის ავტორიზებული");
+    return updatePassword(user, newPass);
   },
 
   signInWithGoogle: async () => {

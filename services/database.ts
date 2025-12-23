@@ -10,11 +10,18 @@ import {
   limit, 
   where, 
   writeBatch,
-  orderBy
+  orderBy,
+  QueryConstraint,
+  startAfter,
+  QueryDocumentSnapshot,
+  increment,
+  getCountFromServer,
 } from 'firebase/firestore';
 import { db } from './firebase';
-import { User, AttendanceRecord, VacationRecord, BranchConfig, PositionMapping, CashDeskRecord, UserRole, View } from '../types';
-import { MOCK_EMPLOYEES, DEFAULT_BRANCH_CONFIGS, OFFICIAL_POSITIONS, DEPARTMENTS } from '../constants';
+import { User, AttendanceRecord, VacationRecord, BranchConfig, PositionMapping, CashDeskRecord, UserRole, View, NewsItem } from '../types';
+import { DEPARTMENTS } from '../constants';
+import { PerformanceMonitor } from './performance';
+import { CacheManager } from './cacheManager';
 
 const COLLECTIONS = {
   USERS: 'users',
@@ -25,32 +32,50 @@ const COLLECTIONS = {
   DEPARTMENTS: 'departments',
   SETTINGS: 'settings',
   CASH_HISTORY: 'cashHistory',
-  SMS_LOGS: 'smsLogs',
-  BRANCH_BALANCES: 'branchBalances'
+  BRANCH_BALANCES: 'branchBalances',
+  DAILY_STATS: 'branchDailyStats',
+  NEWS: 'news'
 };
 
-export interface SMSLog {
-  id: string;
-  to: string;
-  content: string;
-  timestamp: string;
-  status: 'Dispatched' | 'Error';
-  apiMessage?: string;
-  type: 'Automation' | 'Test' | 'Update';
+export interface PaginatedResult<T> {
+  data: T[];
+  lastVisible: QueryDocumentSnapshot | null;
+  totalCount: number;
 }
 
 export interface CustomFont {
   name: string;
-  data: string; // Base64 data URL
+  data: string;
   format: string;
 }
 
+export const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, View[]> = {
+  'Admin': Object.values(View),
+  'Manager': [View.DASHBOARD, View.ATTENDANCE_REPORT, View.VACATIONS, View.PROFILE, View.CASHIER, View.USERS],
+  'Editor': [View.DASHBOARD, View.ATTENDANCE_REPORT, View.PROFILE],
+  'Accountant': [View.DASHBOARD, View.ACCOUNTANT, View.PROFILE],
+  'Employee': [View.DASHBOARD, View.PROFILE, View.VACATIONS],
+  'HR': [View.DASHBOARD, View.VACATIONS, View.PROFILE, View.USERS, View.ATTENDANCE_REPORT]
+};
+
+const FALLBACK_SETTINGS: SystemSettings = {
+  rolePermissions: DEFAULT_ROLE_PERMISSIONS,
+  appTitle: 'Zenith Portal',
+  attendanceEnabledDepartments: [],
+  branchSelectorEnabledDepartments: [],
+  replacementEnabledDepartments: []
+};
+
 export interface SystemSettings {
   appTitle?: string;
+  logoUrl?: string;
   faviconUrl?: string;
   headerFont?: CustomFont;
   bodyFont?: CustomFont;
-  logoUrl?: string;
+  attendanceEnabledDepartments?: string[];
+  rolePermissions: Record<UserRole, View[]>;
+  branchSelectorEnabledDepartments?: string[];
+  replacementEnabledDepartments?: string[];
   smsApiKey?: string;
   smsSenderName?: string;
   adminPhone?: string;
@@ -59,87 +84,406 @@ export interface SystemSettings {
   birthdaySmsTime?: string;
   userSmsTemplate?: string;
   adminSmsTemplate?: string;
-  accountantSmsTemplate?: string;
-  attendanceEnabledDepartments?: string[];
-  cashDeskEnabledDepartments?: string[];
-  replacementEnabledDepartments?: string[];
-  branchSelectorEnabledDepartments?: string[];
-  rolePermissions: Record<UserRole, View[]>;
 }
 
-const DEFAULT_ROLE_PERMISSIONS: Record<UserRole, View[]> = {
-  Admin: Object.values(View).filter(v => v !== View.ATTENDANCE),
-  Manager: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER, View.ATTENDANCE_REPORT, View.ACCOUNTANT, View.USERS],
-  Editor: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER, View.COMPANY_STRUCTURE, View.USERS],
-  Accountant: [View.DASHBOARD, View.PROFILE, View.CASHIER, View.ACCOUNTANT],
-  Employee: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.CASHIER],
-  HR: [View.DASHBOARD, View.PROFILE, View.VACATIONS, View.USERS]
-};
-
-const DEFAULT_SETTINGS: SystemSettings = {
-  appTitle: 'Zenith Portal',
-  smsApiKey: 'af211e7c34a14673b6ff4e27116a7fc1',
-  smsSenderName: 'smsoffice',
-  attendanceEnabledDepartments: ['რითეილი'],
-  cashDeskEnabledDepartments: ['რითეილი'],
-  replacementEnabledDepartments: ['რითეილი'],
-  branchSelectorEnabledDepartments: ['რითეილი'],
-  rolePermissions: DEFAULT_ROLE_PERMISSIONS,
-  logoUrl: '',
-  faviconUrl: '',
-  userSmsTemplate: 'გილოცავთ დაბადების დღეს {name}! გისურვებთ წარმატებებს.',
-  adminSmsTemplate: 'დღეს არის {name}-ს დაბადების დღე. ტელ: {phone}',
-  adminPhone: '',
-  accountantPhone: '',
-  hrPhone: '',
-  birthdaySmsTime: '09:00'
-};
+async function safeGetCount(queryRef: any, dataSnapshot?: any): Promise<number> {
+  try {
+    const countSnap = await getCountFromServer(queryRef);
+    return countSnap.data().count;
+  } catch (error: any) {
+    if (error.code === 'failed-precondition' || error.message?.includes('index')) {
+      console.warn('[COUNT] Index not ready, using fallback count');
+      if (dataSnapshot) return dataSnapshot.docs.length;
+      return 0;
+    }
+    console.error('[COUNT] Count failed:', error);
+    return 0;
+  }
+}
 
 export const Database = {
-  init: async () => {
-    const settingsSnap = await getDoc(doc(db, COLLECTIONS.SETTINGS, 'system'));
-    if (!settingsSnap.exists()) {
-      const batch = writeBatch(db);
-      
-      // Settings
-      batch.set(doc(db, COLLECTIONS.SETTINGS, 'system'), DEFAULT_SETTINGS);
-      
-      // Employees
-      MOCK_EMPLOYEES.forEach(emp => {
-        batch.set(doc(db, COLLECTIONS.USERS, emp.id), emp);
-      });
-      
-      // Branches & Balances
-      DEFAULT_BRANCH_CONFIGS.forEach(branch => {
-        batch.set(doc(db, COLLECTIONS.BRANCHES, branch.name), branch);
-        // Initialize 0 balance for each branch
-        batch.set(doc(db, COLLECTIONS.BRANCH_BALANCES, branch.name), { amount: 0 });
-      });
-      
-      // Positions
-      OFFICIAL_POSITIONS.forEach(pos => {
-        batch.set(doc(db, COLLECTIONS.POSITIONS, pos.title), pos);
-      });
-      
-      // Departments
-      batch.set(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: DEPARTMENTS });
+  _batchWrite: async <T extends { id?: string; uid?: string; name?: string; title?: string }>(
+    collectionName: string, 
+    records: T[], 
+    getId: (item: T) => string
+  ) => {
+    return PerformanceMonitor.trace(`batch_${collectionName}`, async () => {
+      const CHUNK_SIZE = 500;
+      for (let i = 0; i < records.length; i += CHUNK_SIZE) {
+        const chunk = records.slice(i, i + CHUNK_SIZE);
+        const batch = writeBatch(db);
+        chunk.forEach((record) => {
+          const docRef = doc(db, collectionName, getId(record));
+          batch.set(docRef, record, { merge: true });
+        });
+        await batch.commit();
+      }
+    });
+  },
 
-      // Initialize a sample transaction for the cashier database
-      const sampleTx: CashDeskRecord = {
-        id: 'INIT-TX-001',
-        branch: DEFAULT_BRANCH_CONFIGS[0].name,
-        cashierId: 'SYSTEM',
-        cashierName: 'System Admin',
-        date: new Date().toISOString().split('T')[0],
-        openingBalance: 0,
-        cash: 0,
-        terminal: 0,
-        incasation: 0,
-        closingBalance: 0
-      };
-      batch.set(doc(db, COLLECTIONS.CASH_HISTORY, sampleTx.id), sampleTx);
+  getSettings: async (): Promise<SystemSettings> => {
+    return CacheManager.wrap('settings', CacheManager.TTL.STATIC, async () => {
+      try {
+        const snap = await getDoc(doc(db, COLLECTIONS.SETTINGS, 'system'));
+        if (snap.exists()) return snap.data() as SystemSettings;
+        return FALLBACK_SETTINGS;
+      } catch (error) {
+        console.error("[DB] Failed to fetch settings, using hardcoded defaults:", error);
+        return FALLBACK_SETTINGS;
+      }
+    });
+  },
+
+  setSettings: async (settings: SystemSettings) => {
+    await setDoc(doc(db, COLLECTIONS.SETTINGS, 'system'), settings);
+    CacheManager.invalidate('settings');
+  },
+
+  getBranches: async (): Promise<BranchConfig[]> => {
+    return CacheManager.wrap('branches', CacheManager.TTL.STATIC, async () => {
+      try {
+        const snap = await getDocs(collection(db, COLLECTIONS.BRANCHES));
+        return snap.docs.map(d => d.data() as BranchConfig);
+      } catch (error) {
+        console.error("[DB] Failed to fetch branches:", error);
+        return [];
+      }
+    });
+  },
+
+  setBranches: async (branches: BranchConfig[]) => {
+    await Database._batchWrite(COLLECTIONS.BRANCHES, branches, b => b.name);
+    CacheManager.invalidate('branches');
+  },
+
+  deleteBranch: async (name: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.BRANCHES, name));
+    CacheManager.invalidate('branches');
+  },
+
+  getEmployees: async (pageSize: number = 50, lastVisible?: QueryDocumentSnapshot, constraints: QueryConstraint[] = []): Promise<PaginatedResult<User>> => {
+    try {
+      const finalConstraints = [...constraints, orderBy('name'), limit(pageSize)];
+      if (lastVisible) finalConstraints.push(startAfter(lastVisible));
       
-      await batch.commit();
+      const q = query(collection(db, COLLECTIONS.USERS), ...finalConstraints);
+      const countQuery = query(collection(db, COLLECTIONS.USERS), ...constraints);
+      
+      const snap = await getDocs(q);
+      const totalCount = await safeGetCount(countQuery, snap);
+      
+      return { 
+        data: snap.docs.map(d => d.data() as User), 
+        lastVisible: snap.docs[snap.docs.length - 1] || null,
+        totalCount
+      };
+    } catch (error) {
+      console.error("[DB] getEmployees failed:", error);
+      return { data: [], lastVisible: null, totalCount: 0 };
+    }
+  },
+
+  setEmployees: async (employees: User[]) => {
+    await Database._batchWrite(COLLECTIONS.USERS, employees, e => e.uid || e.id);
+    CacheManager.invalidate('users');
+  },
+
+  deleteUser: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.USERS, id));
+    CacheManager.invalidate('users');
+  },
+
+  getNews: async (lim: number = 5): Promise<NewsItem[]> => {
+    return CacheManager.wrap(`news_limit_${lim}`, 10 * 60 * 1000, async () => {
+      try {
+        const q = query(collection(db, COLLECTIONS.NEWS), orderBy('date', 'desc'), limit(lim));
+        const snap = await getDocs(q);
+        return snap.docs.map(d => ({ id: d.id, ...d.data() } as NewsItem));
+      } catch (error) {
+        console.error("[DB] getNews failed:", error);
+        return [];
+      }
+    });
+  },
+
+  saveNewsItem: async (item: NewsItem) => {
+    await setDoc(doc(db, COLLECTIONS.NEWS, item.id), item);
+    CacheManager.invalidate('news');
+  },
+
+  getAttendanceReport: async (
+    filters: { 
+      branch?: string; 
+      department?: string; 
+      isLate?: boolean; 
+      days?: number 
+    },
+    pageSize: number = 50,
+    lastVisible?: QueryDocumentSnapshot
+  ): Promise<PaginatedResult<AttendanceRecord>> => {
+    return PerformanceMonitor.trace('getAttendanceReport', async () => {
+      try {
+        const constraints: QueryConstraint[] = [];
+        const days = filters.days || 30;
+        const targetDate = new Date();
+        targetDate.setDate(targetDate.getDate() - days);
+        const dateStr = targetDate.toISOString().split('T')[0];
+        
+        constraints.push(where('date', '>=', dateStr));
+        if (filters.branch) constraints.push(where('branch', '==', filters.branch));
+        if (filters.department) constraints.push(where('department', '==', filters.department));
+        if (filters.isLate !== undefined) constraints.push(where('isLate', '==', filters.isLate));
+        constraints.push(orderBy('date', 'desc'));
+        
+        const countQuery = query(collection(db, COLLECTIONS.ATTENDANCE), ...constraints);
+        constraints.push(limit(pageSize));
+        if (lastVisible) constraints.push(startAfter(lastVisible));
+        const q = query(collection(db, COLLECTIONS.ATTENDANCE), ...constraints);
+        
+        const snap = await getDocs(q);
+        const totalCount = await safeGetCount(countQuery, snap);
+
+        return {
+          data: snap.docs.map(d => d.data() as AttendanceRecord),
+          lastVisible: snap.docs[snap.docs.length - 1] || null,
+          totalCount
+        };
+      } catch (error) {
+        console.error("[DB] getAttendanceReport failed:", error);
+        return { data: [], lastVisible: null, totalCount: 0 };
+      }
+    });
+  },
+
+  getAttendanceLogs: async (constraints: QueryConstraint[] = [], pageSize: number = 50, lastVisible?: QueryDocumentSnapshot): Promise<PaginatedResult<AttendanceRecord>> => {
+    try {
+      const finalConstraints = [...constraints, limit(pageSize)];
+      if (lastVisible) finalConstraints.push(startAfter(lastVisible));
+      
+      const q = query(collection(db, COLLECTIONS.ATTENDANCE), ...finalConstraints);
+      const countQuery = query(collection(db, COLLECTIONS.ATTENDANCE), ...constraints);
+      
+      const snap = await getDocs(q);
+      const totalCount = await safeGetCount(countQuery, snap);
+      
+      return {
+        data: snap.docs.map(d => d.data() as AttendanceRecord),
+        lastVisible: snap.docs[snap.docs.length - 1] || null,
+        totalCount
+      };
+    } catch (error) {
+      console.error("[DB] getAttendanceLogs failed:", error);
+      return { data: [], lastVisible: null, totalCount: 0 };
+    }
+  },
+
+  saveAttendanceLog: async (log: AttendanceRecord) => {
+    await setDoc(doc(db, COLLECTIONS.ATTENDANCE, log.id), log);
+    CacheManager.invalidate('attendance');
+  },
+
+  saveAttendanceBatch: async (records: AttendanceRecord[]) => {
+    await Database._batchWrite(COLLECTIONS.ATTENDANCE, records, r => r.id);
+    CacheManager.invalidate('attendance');
+  },
+
+  deleteAttendanceLog: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.ATTENDANCE, id));
+    CacheManager.invalidate('attendance');
+  },
+
+  getVacations: async (constraints: QueryConstraint[] = []): Promise<VacationRecord[]> => {
+    try {
+      const q = query(collection(db, COLLECTIONS.VACATIONS), ...constraints);
+      const snap = await getDocs(q);
+      return snap.docs.map(d => d.data() as VacationRecord);
+    } catch (error) {
+      console.error("[DB] getVacations failed:", error);
+      return [];
+    }
+  },
+
+  saveVacation: async (record: VacationRecord) => {
+    await setDoc(doc(db, COLLECTIONS.VACATIONS, record.id), record);
+    CacheManager.invalidate('vacations');
+  },
+
+  deleteVacation: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.VACATIONS, id));
+    CacheManager.invalidate('vacations');
+  },
+
+  getBranchBalance: async (branchName: string): Promise<number> => {
+    return CacheManager.wrap(`balance_${branchName}`, CacheManager.TTL.FREQUENT, async () => {
+      try {
+        const snap = await getDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
+        return snap.exists() ? snap.data().amount : 0;
+      } catch (error) {
+        console.error("[DB] getBranchBalance failed:", error);
+        return 0;
+      }
+    });
+  },
+
+  getAllBranchBalances: async (): Promise<Record<string, number>> => {
+    return CacheManager.wrap('all_branch_balances', CacheManager.TTL.FREQUENT, async () => {
+      try {
+        const snap = await getDocs(collection(db, COLLECTIONS.BRANCH_BALANCES));
+        const balances: Record<string, number> = {};
+        snap.docs.forEach(d => {
+          balances[d.id] = d.data().amount;
+        });
+        return balances;
+      } catch (error) {
+        console.error("[DB] getAllBranchBalances failed:", error);
+        return {};
+      }
+    });
+  },
+
+  updateBranchBalance: async (branchName: string, amount: number) => {
+    await setDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName), { amount });
+    CacheManager.invalidate(`balance_${branchName}`);
+    CacheManager.invalidate('all_branch_balances');
+  },
+
+  saveCashRecord: async (record: CashDeskRecord) => {
+    await setDoc(doc(db, COLLECTIONS.CASH_HISTORY, record.id), record);
+    CacheManager.invalidate('cashHistory');
+  },
+
+  deleteCashRecord: async (id: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.CASH_HISTORY, id));
+    CacheManager.invalidate('cashHistory');
+  },
+
+  getCashHistory: async (constraints: QueryConstraint[] = [], pageSize: number = 50, lastVisible?: QueryDocumentSnapshot): Promise<PaginatedResult<CashDeskRecord>> => {
+    try {
+      const finalConstraints = [...constraints, limit(pageSize)];
+      if (lastVisible) finalConstraints.push(startAfter(lastVisible));
+      
+      const q = query(collection(db, COLLECTIONS.CASH_HISTORY), ...finalConstraints);
+      const countQuery = query(collection(db, COLLECTIONS.CASH_HISTORY), ...constraints);
+      
+      const snap = await getDocs(q);
+      const totalCount = await safeGetCount(countQuery, snap);
+      
+      return {
+        data: snap.docs.map(d => d.data() as CashDeskRecord),
+        lastVisible: snap.docs[snap.docs.length - 1] || null,
+        totalCount
+      };
+    } catch (error) {
+      console.error("[DB] getCashHistory failed:", error);
+      return { data: [], lastVisible: null, totalCount: 0 };
+    }
+  },
+
+  getDepartments: async (): Promise<string[]> => {
+    return CacheManager.wrap('departments', CacheManager.TTL.STATIC, async () => {
+      try {
+        const snap = await getDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'));
+        return snap.exists() ? (snap.data()?.items || DEPARTMENTS) : DEPARTMENTS;
+      } catch (error) {
+        console.error("[DB] getDepartments failed:", error);
+        return DEPARTMENTS;
+      }
+    });
+  },
+
+  setDepartments: async (departments: string[]) => {
+    await setDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: departments });
+    CacheManager.invalidate('departments');
+  },
+
+  getPositions: async (): Promise<PositionMapping[]> => {
+    return CacheManager.wrap('positions', CacheManager.TTL.STATIC, async () => {
+      try {
+        const snap = await getDocs(collection(db, COLLECTIONS.POSITIONS));
+        return snap.docs.map(d => d.data() as PositionMapping);
+      } catch (error) {
+        console.error("[DB] getPositions failed:", error);
+        return [];
+      }
+    });
+  },
+
+  setPositions: async (positions: PositionMapping[]) => {
+    await Database._batchWrite(COLLECTIONS.POSITIONS, positions, p => p.title);
+    CacheManager.invalidate('positions');
+  },
+
+  deletePosition: async (title: string) => {
+    await deleteDoc(doc(db, COLLECTIONS.POSITIONS, title));
+    CacheManager.invalidate('positions');
+  },
+
+  getUserByPersonalId: async (personalId: string): Promise<User | null> => {
+    try {
+      const q = query(collection(db, COLLECTIONS.USERS), where('personalId', '==', personalId), limit(1));
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+      return snap.docs[0].data() as User;
+    } catch (error) {
+      console.error("[DB] getUserByPersonalId failed:", error);
+      return null;
+    }
+  },
+
+  getUserByEmail: async (email: string): Promise<User | null> => {
+    try {
+      const q = query(collection(db, COLLECTIONS.USERS), where('email', '==', email.toLowerCase()), limit(1));
+      const snap = await getDocs(q);
+      if (snap.empty) return null;
+      return snap.docs[0].data() as User;
+    } catch (error) {
+      console.error("[DB] getUserByEmail failed:", error);
+      return null;
+    }
+  },
+
+  syncUserWithAuth: async (firebaseUid: string, email: string): Promise<User | null> => {
+    try {
+      // 1. Try fetching by Document ID (which might be the UID)
+      const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, firebaseUid));
+      if (userDoc.exists()) return userDoc.data() as User;
+
+      // 2. Fallback: Search by UID field OR Email field
+      const q = query(collection(db, COLLECTIONS.USERS), 
+        where('email', '==', email.toLowerCase()), 
+        limit(1)
+      );
+      const snap = await getDocs(q);
+      
+      if (!snap.empty) {
+        const dbUser = snap.docs[0].data() as User;
+        const oldDocId = snap.docs[0].id;
+        
+        // 3. Link UID if missing or different
+        if (dbUser.uid !== firebaseUid) {
+          const updatedUser = { ...dbUser, uid: firebaseUid };
+          
+          // Use a batch to ensure atomicity
+          const batch = writeBatch(db);
+          // Set user with UID as Document ID
+          batch.set(doc(db, COLLECTIONS.USERS, firebaseUid), updatedUser, { merge: true });
+          
+          // If the old document ID wasn't the firebaseUid, we might want to delete it 
+          // to avoid duplicates, but only if it's not the same document.
+          if (oldDocId !== firebaseUid) {
+            batch.delete(doc(db, COLLECTIONS.USERS, oldDocId));
+          }
+          
+          await batch.commit();
+          CacheManager.invalidate('users');
+          return updatedUser;
+        }
+        return dbUser;
+      }
+      return null;
+    } catch (error) {
+      console.error("[DB] syncUserWithAuth failed:", error);
+      return null;
     }
   },
 
@@ -147,202 +491,42 @@ export const Database = {
     const sessionData = localStorage.getItem('zenith_current_user');
     if (!sessionData) return null;
     const sessionUser = JSON.parse(sessionData);
-    if (sessionUser.uid) {
-       const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, sessionUser.uid));
-       if (userDoc.exists()) return userDoc.data() as User;
-    }
-    const userDocById = await getDoc(doc(db, COLLECTIONS.USERS, sessionUser.id));
-    return userDocById.exists() ? (userDocById.data() as User) : sessionUser;
-  },
-
-  getUserByUid: async (uid: string): Promise<User | null> => {
-    const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, uid));
-    if (userDoc.exists()) return userDoc.data() as User;
-    return null;
-  },
-
-  getUserByPersonalId: async (personalId: string): Promise<User | null> => {
-    const q = query(collection(db, COLLECTIONS.USERS), where("personalId", "==", personalId), limit(1));
-    const snap = await getDocs(q);
-    if (!snap.empty) return snap.docs[0].data() as User;
-    return MOCK_EMPLOYEES.find(e => e.personalId === personalId) || null;
-  },
-
-  syncUserWithAuth: async (firebaseUid: string, email: string): Promise<User | null> => {
-    const existing = await Database.getUserByUid(firebaseUid);
-    if (existing) return existing;
-
-    const q = query(collection(db, COLLECTIONS.USERS), where("email", "==", email), limit(1));
-    const snap = await getDocs(q);
-    
-    if (!snap.empty) {
-      const docData = snap.docs[0].data() as User;
-      const oldId = snap.docs[0].id;
-      const updatedUser = { ...docData, uid: firebaseUid };
-      const batch = writeBatch(db);
-      batch.set(doc(db, COLLECTIONS.USERS, firebaseUid), updatedUser);
-      batch.delete(doc(db, COLLECTIONS.USERS, oldId));
-      await batch.commit();
-      return updatedUser;
-    }
-
-    const mockUser = MOCK_EMPLOYEES.find(e => e.email?.toLowerCase() === email.toLowerCase());
-    if (mockUser) {
-      const migratedUser = { ...mockUser, uid: firebaseUid };
-      await setDoc(doc(db, COLLECTIONS.USERS, firebaseUid), migratedUser);
-      return migratedUser;
-    }
-    return null;
+    const userId = sessionUser.uid || sessionUser.id;
+    return CacheManager.wrap(`current_user_${userId}`, CacheManager.TTL.PROFILES, async () => {
+      try {
+        const userDoc = await getDoc(doc(db, COLLECTIONS.USERS, userId));
+        return userDoc.exists() ? (userDoc.data() as User) : sessionUser;
+      } catch (error) {
+        console.error("[DB] getCurrentUser failed:", error);
+        return sessionUser;
+      }
+    });
   },
 
   setCurrentUser: async (user: User) => {
+    const userId = user.uid || user.id;
     localStorage.setItem('zenith_current_user', JSON.stringify(user));
-    const key = user.uid || user.id;
-    await setDoc(doc(db, COLLECTIONS.USERS, key), user);
+    try {
+      await setDoc(doc(db, COLLECTIONS.USERS, userId), user, { merge: true });
+    } catch (error) {
+      console.error("[DB] setCurrentUser failed (local only):", error);
+    }
+    CacheManager.invalidate(`current_user_${userId}`);
+    CacheManager.invalidate('users');
   },
 
-  getEmployees: async (): Promise<User[]> => {
-    const snap = await getDocs(collection(db, COLLECTIONS.USERS));
-    return snap.docs.map(d => d.data() as User);
-  },
-
-  setEmployees: async (employees: User[]) => {
-    const batch = writeBatch(db);
-    employees.forEach((emp) => {
-      const key = emp.uid || emp.id;
-      const ref = doc(db, COLLECTIONS.USERS, key);
-      batch.set(ref, emp);
-    });
-    await batch.commit();
-  },
-
-  deleteUser: async (id: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.USERS, id));
-  },
-
-  getAttendanceLogs: async (): Promise<AttendanceRecord[]> => {
-    const snap = await getDocs(query(collection(db, COLLECTIONS.ATTENDANCE)));
-    return snap.docs.map(d => d.data() as AttendanceRecord);
-  },
-
-  saveAttendanceLog: async (log: AttendanceRecord) => {
-    await setDoc(doc(db, COLLECTIONS.ATTENDANCE, log.id), log);
-  },
-
-  deleteAttendanceLog: async (id: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.ATTENDANCE, id));
-  },
-
-  getVacations: async (): Promise<VacationRecord[]> => {
-    const snap = await getDocs(collection(db, COLLECTIONS.VACATIONS));
-    return snap.docs.map(d => d.data() as VacationRecord);
-  },
-
-  saveVacation: async (vacation: VacationRecord) => {
-    await setDoc(doc(db, COLLECTIONS.VACATIONS, vacation.id), vacation);
-  },
-
-  setVacations: async (vacations: VacationRecord[]) => {
-    const batch = writeBatch(db);
-    vacations.forEach((v) => {
-      batch.set(doc(db, COLLECTIONS.VACATIONS, v.id), v);
-    });
-    await batch.commit();
-  },
-
-  deleteVacation: async (id: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.VACATIONS, id));
-  },
-
-  getBranches: async (): Promise<BranchConfig[]> => {
-    const snap = await getDocs(collection(db, COLLECTIONS.BRANCHES));
-    return snap.docs.map(d => d.data() as BranchConfig);
-  },
-
-  setBranches: async (branches: BranchConfig[]) => {
-    const batch = writeBatch(db);
-    branches.forEach((b) => {
-      batch.set(doc(db, COLLECTIONS.BRANCHES, b.name), b);
-    });
-    await batch.commit();
-  },
-
-  deleteBranch: async (branchName: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.BRANCHES, branchName));
-    await deleteDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
-  },
-
-  getBranchBalance: async (branchName: string): Promise<number> => {
-    const snap = await getDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName));
-    return snap.exists() ? (snap.data()?.amount || 0) : 0;
-  },
-
-  updateBranchBalance: async (branchName: string, newBalance: number) => {
-    await setDoc(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName), { amount: newBalance });
-  },
-
-  getPositions: async (): Promise<PositionMapping[]> => {
-    const snap = await getDocs(collection(db, COLLECTIONS.POSITIONS));
-    return snap.docs.map(d => d.data() as PositionMapping);
-  },
-
-  setPositions: async (positions: PositionMapping[]) => {
-    const batch = writeBatch(db);
-    positions.forEach((p) => {
-      batch.set(doc(db, COLLECTIONS.POSITIONS, p.title), p);
-    });
-    await batch.commit();
-  },
-
-  deletePosition: async (title: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.POSITIONS, title));
-  },
-
-  getDepartments: async (): Promise<string[]> => {
-    const snap = await getDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'));
-    return snap.exists() ? (snap.data()?.items || DEPARTMENTS) : DEPARTMENTS;
-  },
-
-  setDepartments: async (departments: string[]) => {
-    await setDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: departments });
-  },
-
-  getCashHistory: async (): Promise<CashDeskRecord[]> => {
-    const q = query(collection(db, COLLECTIONS.CASH_HISTORY), orderBy('date', 'desc'));
-    const snap = await getDocs(q);
-    return snap.docs.map(d => d.data() as CashDeskRecord);
-  },
-
-  saveCashRecord: async (record: CashDeskRecord) => {
-    await setDoc(doc(db, COLLECTIONS.CASH_HISTORY, record.id), record);
-  },
-
-  deleteCashRecord: async (id: string) => {
-    await deleteDoc(doc(db, COLLECTIONS.CASH_HISTORY, id));
-  },
-
-  getSMSLogs: async (): Promise<SMSLog[]> => {
-    const snap = await getDocs(query(collection(db, COLLECTIONS.SMS_LOGS), limit(500)));
-    return snap.docs.map(d => d.data() as SMSLog);
-  },
-
-  addSMSLog: async (log: Omit<SMSLog, 'id' | 'timestamp'>) => {
-    const id = Math.random().toString(36).substr(2, 9);
-    const newLog: SMSLog = {
-      ...log,
-      id,
-      timestamp: new Date().toLocaleString('ka-GE')
-    };
-    await setDoc(doc(db, COLLECTIONS.SMS_LOGS, id), newLog);
-  },
-
-  getSettings: async (): Promise<SystemSettings> => {
-    const snap = await getDoc(doc(db, COLLECTIONS.SETTINGS, 'system'));
-    return snap.exists() ? (snap.data() as SystemSettings) : DEFAULT_SETTINGS;
-  },
-
-  setSettings: async (settings: SystemSettings) => {
-    await setDoc(doc(db, COLLECTIONS.SETTINGS, 'system'), settings);
-    window.dispatchEvent(new CustomEvent('settingsUpdated', { detail: settings }));
+  warmup: async () => {
+    console.debug("[CACHE] Warming up static resources...");
+    try {
+      await Promise.allSettled([
+        Database.getSettings(),
+        Database.getBranches(),
+        Database.getDepartments(),
+        Database.getPositions(),
+        Database.getNews(3)
+      ]);
+    } catch (error) {
+      console.warn("[CACHE] Warmup partially failed due to offline status.");
+    }
   }
 };
