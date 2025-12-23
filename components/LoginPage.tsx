@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { Icons } from '../constants';
 import { Database } from '../services/database';
@@ -19,7 +18,6 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
 
   const handleSyncProfile = async (firebaseUser: any) => {
     if (firebaseUser && firebaseUser.email) {
-      // syncUserWithAuth now handles cross-referencing and UID linking
       const profile = await Database.syncUserWithAuth(firebaseUser.uid, firebaseUser.email);
       if (profile) {
         onLogin(profile);
@@ -28,6 +26,31 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
     }
     setError('ავტორიზაცია წარმატებულია, თუმცა პროფილი სისტემაში არ მოიძებნა.');
     return false;
+  };
+
+  const handleGoogleSignIn = async () => {
+    setError('');
+    setIsLoading(true);
+
+    try {
+      const result = await AuthService.signInWithGoogle();
+      
+      if (result.user && result.user.email) {
+        await handleSyncProfile(result.user);
+      }
+    } catch (err: any) {
+      console.error('Google Sign-In Error:', err);
+      
+      if (err.code === 'auth/popup-closed-by-user') {
+        setError('Google ავტორიზაცია გაუქმდა.');
+      } else if (err.code === 'auth/popup-blocked') {
+        setError('გთხოვთ დაუშვათ pop-up ფანჯრები ამ საიტისთვის.');
+      } else {
+        setError('Google ავტორიზაციის შეცდომა: ' + (err.message || 'უცნობი შეცდომა'));
+      }
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -39,7 +62,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
     const isEmail = input.includes('@');
     
     try {
-      // 1. Resolve User from Firestore (Source of Truth for credentials)
+      // 1. Resolve User from Firestore
       let dbUser: User | null = null;
       if (isEmail) {
         dbUser = await Database.getUserByEmail(input);
@@ -53,7 +76,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
         return;
       }
 
-      // 2. Validate Password directly against the database record
+      // 2. Validate Password
       if (!dbUser.password || password !== dbUser.password) {
         setError('პაროლი არასწორია.');
         setIsLoading(false);
@@ -69,19 +92,15 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
       } catch (err: any) {
         console.warn("Primary Auth sign-in failed, attempting recovery...", err.code);
         
-        // auth/invalid-credential is the generic error for user not found OR wrong password in modern Firebase
         if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential') {
           try {
-            // Attempt auto-provisioning the Auth account since Firestore creds are valid
             const signupResult = await AuthService.signUp(loginEmail, password);
             const updatedUser = { ...dbUser, uid: signupResult.user.uid };
-            // Update the user document to link the new Firebase UID
             await Database.setEmployees([updatedUser]);
             onLogin(updatedUser);
           } catch (signupErr: any) {
             if (signupErr.code === 'auth/email-already-in-use') {
-              // This confirms the account exists in Auth but password didn't match
-              setError('ავტორიზაციის ხარვეზი: სისტემური პაროლი არ ემთხვევა ავტორიზაციის მოდულს. მიმართეთ IT მხარდაჭერას პაროლის სინქრონიზაციისთვის.');
+              setError('ავტორიზაციის ხარვეზი: სისტემური პაროლი არ ემთხვევა. მიმართეთ IT მხარდაჭერას.');
             } else {
               setError('სესიის შექმნა ვერ მოხერხდა: ' + signupErr.message);
             }
@@ -105,6 +124,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6 font-sans">
       <div className="w-full max-w-md animate-in fade-in zoom-in-95 duration-500">
         <div className="bg-white rounded-[5px] shadow-3xl overflow-hidden border border-slate-200">
+          {/* Header */}
           <div className="bg-slate-900 p-12 text-center relative overflow-hidden">
             <div className="absolute inset-0 opacity-10 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')]"></div>
             <div className="relative z-10 space-y-6">
@@ -122,6 +142,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
             </div>
           </div>
 
+          {/* Body */}
           <div className="p-10 space-y-8">
             {error && (
               <div className="bg-rose-50 border border-rose-100 p-4 rounded-[5px] flex items-start gap-3 animate-in slide-in-from-top-2">
@@ -132,6 +153,7 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
               </div>
             )}
 
+            {/* Email/Password Form */}
             <form onSubmit={handleSubmit} className="space-y-6">
               <div className="space-y-6">
                 <div className="space-y-2">
@@ -143,7 +165,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
                       value={identifier}
                       onChange={(e) => setIdentifier(e.target.value)}
                       placeholder="Email / Personal ID"
-                      className="w-full bg-slate-50 border-2 border-slate-100 px-5 py-4 rounded-[5px] text-sm font-black text-slate-700 outline-none focus:border-indigo-600 focus:bg-white transition-all shadow-sm"
+                      disabled={isLoading}
+                      className="w-full bg-slate-50 border-2 border-slate-100 px-5 py-4 rounded-[5px] text-sm font-black text-slate-700 outline-none focus:border-indigo-600 focus:bg-white transition-all shadow-sm disabled:opacity-50"
                     />
                     <div className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors">
                       <Icons.User />
@@ -160,7 +183,8 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
                       value={password}
                       onChange={(e) => setPassword(e.target.value)}
                       placeholder="••••••••"
-                      className="w-full bg-slate-50 border-2 border-slate-100 px-5 py-4 rounded-[5px] text-sm font-black text-slate-700 outline-none focus:border-indigo-600 focus:bg-white transition-all shadow-sm"
+                      disabled={isLoading}
+                      className="w-full bg-slate-50 border-2 border-slate-100 px-5 py-4 rounded-[5px] text-sm font-black text-slate-700 outline-none focus:border-indigo-600 focus:bg-white transition-all shadow-sm disabled:opacity-50"
                     />
                     <div className="absolute right-5 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors">
                       <Icons.Admin />
@@ -181,8 +205,30 @@ const LoginPage: React.FC<LoginPageProps> = ({ onLogin, logoUrl, appTitle }) => 
                 )}
               </button>
             </form>
+
+            {/* Divider */}
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-slate-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-4 bg-white text-[10px] text-slate-400 font-black uppercase tracking-widest">ან</span>
+              </div>
+            </div>
+
+            {/* Google Sign-In Button */}
+            <button
+              type="button"
+              onClick={handleGoogleSignIn}
+              disabled={isLoading}
+              className="w-full flex items-center justify-center gap-3 bg-white border-2 border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700 font-black py-4 rounded-[5px] transition-all disabled:opacity-50 disabled:cursor-not-allowed shadow-sm text-xs uppercase tracking-widest"
+            >
+              <Icons.Google />
+              Google-ით შესვლა
+            </button>
           </div>
 
+          {/* Footer */}
           <div className="bg-slate-50 p-6 border-t border-slate-100 text-center">
              <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
                 გამოიყენეთ პორტალზე რეგისტრირებული მონაცემები

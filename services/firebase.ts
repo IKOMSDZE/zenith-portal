@@ -1,6 +1,5 @@
 
 // services/firebase.ts
-// Fix: Use a more compatible import style from "firebase/app" to correctly initialize Firebase with modular SDK and avoid member export errors.
 import * as FirebaseApp from "firebase/app";
 const { initializeApp, getApp, getApps } = FirebaseApp as any;
 
@@ -26,14 +25,17 @@ const app = getApps().length === 0
   ? initializeApp(firebaseConfig) 
   : getApp();
 
-// ⭐ MODERN PERSISTENCE & CONNECTIVITY FIX
-// We enable experimentalForceLongPolling to resolve "Could not reach Cloud Firestore backend"
-// which is often caused by WebSocket blocks in specific environments.
+/**
+ * OPTIMIZED FIRESTORE INITIALIZATION
+ * experimentalForceLongPolling: true - Replaces WebSockets with HTTPS long polling.
+ * This is crucial for bypassing restrictive firewalls or corporate proxies that 
+ * frequently interrupt the persistent connection.
+ */
 const db = initializeFirestore(app, {
   localCache: persistentLocalCache({
     tabManager: persistentMultipleTabManager()
   }),
-  experimentalForceLongPolling: true, // Fix for connectivity issues
+  experimentalForceLongPolling: true, 
 });
 
 const auth = getAuth(app);
@@ -41,14 +43,12 @@ const auth = getAuth(app);
 // Optional: Listen to online/offline events
 if (typeof window !== 'undefined') {
   window.addEventListener('online', () => {
-    console.log("✅ Connection restored - syncing data...");
+    console.debug("✅ Connection restored - syncing data...");
   });
 
   window.addEventListener('offline', () => {
-    console.log("📱 Working offline");
+    console.debug("📱 Working offline: Data will be persisted locally.");
   });
 }
-
-console.log("✅ Firebase initialized with long polling and persistence!");
 
 export { app, db, auth };

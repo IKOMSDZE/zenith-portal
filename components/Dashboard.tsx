@@ -1,6 +1,6 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, View, AttendanceRecord, BranchConfig, NewsItem } from '../types';
+import { User, View, AttendanceRecord, BranchConfig, NewsItem, VacationRecord } from '../types';
 import { Icons } from '../constants';
 import { Database } from '../services/database';
 import { where, orderBy, limit } from 'firebase/firestore';
@@ -31,6 +31,8 @@ const Dashboard: React.FC<DashboardProps> = ({
   const [currentTime, setCurrentTime] = useState(new Date());
   const [recentLogs, setRecentLogs] = useState<AttendanceRecord[] | null>(null);
   const [news, setNews] = useState<NewsItem[]>([]);
+  const [upcomingBirthdays, setUpcomingBirthdays] = useState<User[]>([]);
+  const [upcomingVacations, setUpcomingVacations] = useState<VacationRecord[]>([]);
   const [isLoadingAction, setIsLoadingAction] = useState(false);
 
   useEffect(() => {
@@ -43,19 +45,58 @@ const Dashboard: React.FC<DashboardProps> = ({
     [currentTime]
   );
 
-  const fetchLogs = async () => {
-    const res = await Database.getAttendanceLogs([
-      where('employeeId', '==', user.id),
-      orderBy('date', 'desc'),
+  const fetchDashboardData = async () => {
+    // 1. Fetch Attendance if enabled
+    if (isAttendanceEnabled) {
+      const res = await Database.getAttendanceLogs([
+        where('employeeId', '==', user.id),
+        orderBy('date', 'desc'),
+        limit(5)
+      ]);
+      setRecentLogs(res.data);
+    }
+
+    // 2. Fetch News
+    Database.getNews(10).then(setNews);
+
+    // 3. Fetch Birthdays (Logic: Next 14 days)
+    const empRes = await Database.getEmployees(100); // Fetch a reasonable batch
+    const now = new Date();
+    const rangeEnd = new Date();
+    rangeEnd.setDate(now.getDate() + 14);
+
+    const bdays = empRes.data.filter(emp => {
+      if (!emp.birthday) return false;
+      const bday = new Date(emp.birthday);
+      const nextBday = new Date(now.getFullYear(), bday.getMonth(), bday.getDate());
+      if (nextBday < new Date(now.getFullYear(), now.getMonth(), now.getDate())) {
+        nextBday.setFullYear(now.getFullYear() + 1);
+      }
+      return nextBday >= new Date(now.getFullYear(), now.getMonth(), now.getDate()) && nextBday <= rangeEnd;
+    }).sort((a, b) => {
+      const getNext = (d: string) => {
+        const bd = new Date(d);
+        const nbd = new Date(now.getFullYear(), bd.getMonth(), bd.getDate());
+        if (nbd < new Date(now.getFullYear(), now.getMonth(), now.getDate())) nbd.setFullYear(now.getFullYear() + 1);
+        return nbd.getTime();
+      };
+      return getNext(a.birthday!) - getNext(b.birthday!);
+    });
+    setUpcomingBirthdays(bdays);
+
+    // 4. Fetch Vacations (Active or upcoming)
+    const todayISO = now.toISOString().split('T')[0];
+    const vacs = await Database.getVacations([
+      where('status', '==', 'Approved'),
+      where('endDate', '>=', todayISO),
       limit(5)
     ]);
-    setRecentLogs(res.data);
+    setUpcomingVacations(vacs);
   };
 
   useEffect(() => {
-    fetchLogs();
-    Database.getNews(10).then(setNews);
-  }, [user.id]);
+    fetchDashboardData();
+  }, [user.id, isAttendanceEnabled]);
 
   const activeRecord = useMemo(() => {
     if (!recentLogs) return null;
@@ -76,7 +117,6 @@ const Dashboard: React.FC<DashboardProps> = ({
 
     try {
       if (activeRecord) {
-        // CHECK OUT
         const updatedRecord: AttendanceRecord = {
           ...activeRecord,
           checkOut: timeStr,
@@ -84,9 +124,8 @@ const Dashboard: React.FC<DashboardProps> = ({
         };
         await Database.saveAttendanceLog(updatedRecord);
         await onUpdateUser({ checkedIn: false });
-        await fetchLogs();
+        await fetchDashboardData();
       } else {
-        // CHECK IN
         if (hasCompletedToday) {
            alert("თქვენ უკვე დაასრულეთ სამუშაო დღე.");
            setIsLoadingAction(false);
@@ -118,7 +157,7 @@ const Dashboard: React.FC<DashboardProps> = ({
         
         await onAddRecord(newRecord);
         await onUpdateUser({ checkedIn: true, lastCheckIn: timeStr });
-        await fetchLogs();
+        await fetchDashboardData();
       }
     } catch (e) {
       console.error(e);
@@ -154,7 +193,7 @@ const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-7 space-y-8">
+        <div className="lg:col-span-8 space-y-8">
           {/* Main Attendance Module */}
           {isAttendanceEnabled && (
             <div className="bg-white rounded-[5px] p-10 border border-slate-200 shadow-sm relative overflow-hidden">
@@ -192,55 +231,115 @@ const Dashboard: React.FC<DashboardProps> = ({
             </div>
           )}
 
-          {/* Attendance History List */}
+          {/* Attendance History List - ONLY if enabled */}
+          {isAttendanceEnabled && (
+            <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
+              <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
+                  <Icons.Clock /> ბოლო ჩანაწერები
+                </h3>
+              </div>
+              <div className="overflow-x-auto">
+                 <table className="w-full text-left">
+                   <thead>
+                      <tr className="bg-slate-50 text-[9px] font-black uppercase text-slate-400 tracking-widest border-b border-slate-100">
+                        <th className="px-8 py-4">თარიღი</th>
+                        <th className="px-8 py-4">მოსვლა</th>
+                        <th className="px-8 py-4">წასვლა</th>
+                        <th className="px-8 py-4 text-right">სტატუსი</th>
+                      </tr>
+                   </thead>
+                   <tbody className="divide-y divide-slate-50">
+                     {recentLogs === null ? (
+                       [1, 2].map(i => <tr key={i}><td colSpan={4} className="p-6"><Skeleton className="h-4 w-full" /></td></tr>)
+                     ) : recentLogs.length > 0 ? (
+                       recentLogs.map(log => (
+                         <tr key={log.id} className="hover:bg-slate-50 transition-colors">
+                           <td className="px-8 py-5 text-[11px] font-black text-slate-900 uppercase">{log.date}</td>
+                           <td className="px-8 py-5 text-[10px] font-black text-indigo-600">{log.checkIn}</td>
+                           <td className="px-8 py-5 text-[10px] font-black text-slate-400">{log.checkOut || '—'}</td>
+                           <td className="px-8 py-5 text-right">
+                             <span className={`px-4 py-1 rounded-[3px] font-black text-[9px] uppercase tracking-widest ${log.status === 'Active' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-500'}`}>
+                               {log.status === 'Active' ? 'აქტიური' : 'დასრულებული'}
+                             </span>
+                           </td>
+                         </tr>
+                       ))
+                     ) : (
+                      <tr>
+                        <td colSpan={4} className="px-8 py-10 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic">აქტივობა არ ფიქსირდება</td>
+                      </tr>
+                     )}
+                   </tbody>
+                 </table>
+              </div>
+            </div>
+          )}
+
+          {/* Upcoming Vacations */}
           <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
             <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
               <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
-                <Icons.Clock /> ბოლო ჩანაწერები
+                <Icons.Calendar /> მიმდინარე და დაგეგმილი შვებულებები
               </h3>
+              <button onClick={() => setActiveView(View.VACATIONS)} className="text-[9px] font-black text-indigo-600 uppercase hover:underline">ყველას ნახვა</button>
             </div>
-            <div className="overflow-x-auto">
-               <table className="w-full text-left">
-                 <thead>
-                    <tr className="bg-slate-50 text-[9px] font-black uppercase text-slate-400 tracking-widest border-b border-slate-100">
-                      <th className="px-8 py-4">თარიღი</th>
-                      <th className="px-8 py-4">მოსვლა</th>
-                      <th className="px-8 py-4">წასვლა</th>
-                      <th className="px-8 py-4 text-right">სტატუსი</th>
-                    </tr>
-                 </thead>
-                 <tbody className="divide-y divide-slate-50">
-                   {recentLogs === null ? (
-                     [1, 2, 3].map(i => <tr key={i}><td colSpan={4} className="p-6"><Skeleton className="h-4 w-full" /></td></tr>)
-                   ) : recentLogs.length > 0 ? (
-                     recentLogs.map(log => (
-                       <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                         <td className="px-8 py-5 text-[11px] font-black text-slate-900 uppercase">{log.date}</td>
-                         <td className="px-8 py-5 text-[10px] font-black text-indigo-600">{log.checkIn}</td>
-                         <td className="px-8 py-5 text-[10px] font-black text-slate-400">{log.checkOut || '—'}</td>
-                         <td className="px-8 py-5 text-right">
-                           <span className={`px-4 py-1 rounded-[3px] font-black text-[9px] uppercase tracking-widest ${log.status === 'Active' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-500'}`}>
-                             {log.status === 'Active' ? 'აქტიური' : 'დასრულებული'}
-                           </span>
-                         </td>
-                       </tr>
-                     ))
-                   ) : (
-                    <tr>
-                      <td colSpan={4} className="px-8 py-10 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic">აქტივობა არ ფიქსირდება</td>
-                    </tr>
-                   )}
-                 </tbody>
-               </table>
+            <div className="divide-y divide-slate-100">
+               {upcomingVacations.map(vac => (
+                 <div key={vac.id} className="p-6 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                    <div className="flex items-center gap-4">
+                       <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600"><Icons.User /></div>
+                       <div>
+                          <p className="text-[11px] font-black text-slate-900 uppercase">{vac.employeeName}</p>
+                          <p className="text-[9px] text-slate-400 font-bold uppercase">{vac.startDate} — {vac.endDate}</p>
+                       </div>
+                    </div>
+                    <span className="text-[8px] font-black px-2 py-0.5 bg-slate-100 text-slate-500 rounded uppercase tracking-widest">{vac.reason}</span>
+                 </div>
+               ))}
+               {upcomingVacations.length === 0 && (
+                 <div className="p-10 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic">შვებულებები არ ფიქსირდება</div>
+               )}
             </div>
           </div>
         </div>
 
-        <div className="lg:col-span-5">
-           {/* Integrated News Feed */}
-           <div className="h-full">
-              <NewsFeed news={news} />
-           </div>
+        <div className="lg:col-span-4 space-y-8">
+          {/* Birthdays Section */}
+          <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
+            <div className="px-8 py-5 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between">
+              <h3 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
+                <Icons.Gift /> დაბადების დღეები
+              </h3>
+              <span className="text-[8px] font-bold text-white/50 uppercase">შემდეგი 14 დღე</span>
+            </div>
+            <div className="divide-y divide-slate-50">
+               {upcomingBirthdays.map(emp => {
+                 const bday = new Date(emp.birthday!);
+                 const displayDate = bday.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+                 return (
+                   <div key={emp.id} className="p-5 flex items-center gap-4 group">
+                      <img src={emp.avatar} className="w-10 h-10 rounded-[5px] object-cover group-hover:scale-105 transition-transform" />
+                      <div className="flex-1">
+                         <p className="text-[11px] font-black text-slate-900 uppercase">{emp.name}</p>
+                         <p className="text-[9px] text-indigo-500 font-black uppercase">{displayDate}</p>
+                      </div>
+                      <div className="text-slate-100 group-hover:text-indigo-600 transition-colors"><Icons.Gift /></div>
+                   </div>
+                 );
+               })}
+               {upcomingBirthdays.length === 0 && (
+                 <div className="p-12 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic leading-relaxed">
+                   ახლო მომავალში დაბადების დღეები არ ფიქსირდება
+                 </div>
+               )}
+            </div>
+          </div>
+
+          {/* Integrated News Feed */}
+          <div className="h-fit">
+            <NewsFeed news={news} />
+          </div>
         </div>
       </div>
     </div>
