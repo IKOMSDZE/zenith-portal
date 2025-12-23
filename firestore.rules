@@ -4,82 +4,92 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     
-    // --- Helper Functions (Zero Latency - Uses Auth Token) ---
+    // --- Helper Functions ---
     
     function isSignedIn() {
       return request.auth != null;
     }
 
-    // Role-based access using Custom Claims (Token-based, no DB reads)
-    function hasRole(role) {
-      return isSignedIn() && request.auth.token.role == role;
+    // Fetches the user document from the 'users' collection using the Auth UID as the key.
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    // Owner check based on UID field in document
+    function isAdmin() {
+      return isSignedIn() && getUserData().role == 'Admin';
+    }
+
+    function isManager() {
+      return isSignedIn() && getUserData().role == 'Manager';
+    }
+
+    function isHR() {
+      return isSignedIn() && getUserData().role == 'HR';
+    }
+
+    function isAccountant() {
+      return isSignedIn() && getUserData().role == 'Accountant';
+    }
+
+    // Checks if the document belongs to the authenticated user
     function isOwner(data) {
-      return isSignedIn() && data.uid == request.auth.uid;
+      return isSignedIn() && data.employeeId == getUserData().id;
     }
 
     // --- Collection Rules ---
 
+    // 1. Users
     match /users/{userId} {
-      // Users can read their own profile, Admins/Managers/HR can read all
-      allow read: if isSignedIn() && (
-        request.auth.uid == userId || 
-        hasRole('Admin') || hasRole('Manager') || hasRole('HR')
-      );
-      // Only Admins can create/delete users, users can update their own non-role fields
-      allow create, delete: if hasRole('Admin');
-      allow update: if hasRole('Admin') || (
-        request.auth.uid == userId && 
-        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'isAdmin', 'vacationDaysTotal'])
-      );
+      allow read: if isSignedIn() && (request.auth.uid == userId || isAdmin() || isManager() || isHR());
+      allow write: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
     }
 
+    // 2. Attendance
     match /attendance/{id} {
-      allow read: if isSignedIn() && (hasRole('Admin') || hasRole('Manager') || isOwner(resource.data));
-      // Enforce UID matching on creation
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      allow update, delete: if hasRole('Admin') || isOwner(resource.data);
+      allow read: if isSignedIn() && (isAdmin() || isManager() || isOwner(resource.data));
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin() || isOwner(resource.data);
     }
 
+    // 3. Vacations
     match /vacations/{id} {
-      allow read: if isSignedIn() && (hasRole('Admin') || hasRole('Manager') || hasRole('HR') || isOwner(resource.data));
-      allow create: if isSignedIn() && request.resource.data.uid == request.auth.uid;
-      // Approval/Rejection only by specific roles
-      allow update: if hasRole('Admin') || hasRole('Manager') || hasRole('HR');
-      allow delete: if hasRole('Admin');
+      allow read: if isSignedIn() && (isAdmin() || isManager() || isHR() || isOwner(resource.data));
+      allow create: if isSignedIn();
+      allow update, delete: if isAdmin() || isManager() || isHR();
     }
 
+    // 4. Branches
     match /branches/{branchId} {
       allow read: if isSignedIn();
-      allow write: if hasRole('Admin');
+      allow write: if isAdmin() || (isManager() && getUserData().branch == branchId);
     }
 
+    // 5. System Settings
     match /settings/{docId} {
       allow read: if isSignedIn();
-      allow write: if hasRole('Admin');
+      allow write: if isAdmin();
     }
 
+    // 6. Branch Balances & Cash History
     match /branchBalances/{branchId} {
-      allow read: if isSignedIn() && (hasRole('Admin') || hasRole('Manager') || hasRole('Accountant'));
-      allow write: if isSignedIn() && (hasRole('Admin') || hasRole('Manager'));
+      allow read: if isSignedIn() && (isAdmin() || isManager() || isAccountant());
+      allow write: if isSignedIn() && (isAdmin() || isManager() || getUserData().branch == branchId);
     }
 
     match /cashHistory/{id} {
-      allow read: if isSignedIn() && (hasRole('Admin') || hasRole('Manager') || hasRole('Accountant'));
+      allow read: if isSignedIn() && (isAdmin() || isManager() || isAccountant());
       allow create: if isSignedIn();
-      allow update, delete: if hasRole('Admin') || hasRole('Accountant');
+      allow update, delete: if isAdmin() || isAccountant();
     }
 
-    match /news/{id} {
-      allow read: if isSignedIn();
-      allow write: if hasRole('Admin') || hasRole('Editor');
+    // 7. SMS Logs
+    match /smsLogs/{id} {
+      allow read, write: if isAdmin();
     }
 
-    // Default catch-all
+    // Default
     match /{document=**} {
-      allow read, write: if hasRole('Admin');
+      allow read, write: if isAdmin();
     }
   }
 }

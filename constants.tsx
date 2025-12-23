@@ -1,6 +1,4 @@
 
-// constants.tsx
-
 import React from 'react';
 import { User, AttendanceRecord, BranchConfig, VacationRecord, PositionMapping } from './types';
 
@@ -35,7 +33,6 @@ const CURRENT_YEAR = new Date().getFullYear();
 
 export const MOCK_USER: User = {
   id: 'EMP-999',
-  uid: 'UID-999', // Added uid to satisfy type requirements in related records
   name: 'Alex Rivera',
   role: 'Admin',
   department: 'რითეილი',
@@ -60,7 +57,6 @@ export const MOCK_EMPLOYEES: User[] = [
   MOCK_USER,
   {
     id: 'EMP-002',
-    uid: 'UID-002', // Added uid
     name: 'Sarah Chen',
     role: 'Manager',
     department: 'ოფისი',
@@ -78,7 +74,6 @@ export const MOCK_EMPLOYEES: User[] = [
   },
   {
     id: 'EMP-003',
-    uid: 'UID-003', // Added uid
     name: 'Marcus Thorne',
     role: 'HR',
     department: 'ოფისი',
@@ -95,7 +90,6 @@ export const MOCK_EMPLOYEES: User[] = [
   },
   {
     id: 'EMP-004',
-    uid: 'UID-004', // Added uid
     name: 'Elena Rodriguez',
     role: 'Employee',
     department: 'რითეილი',
@@ -117,7 +111,6 @@ export const MOCK_VACATIONS: VacationRecord[] = [
   {
     id: 'v1',
     employeeId: 'EMP-001',
-    uid: 'UID-001', // Added uid to satisfy type requirement
     employeeName: 'Alex Rivera',
     startDate: '2024-06-10',
     endDate: '2024-06-15',
@@ -134,10 +127,7 @@ export const MOCK_ATTENDANCE_REPORTS: AttendanceRecord[] = [
   {
     id: '1',
     employeeId: 'EMP-001',
-    uid: 'UID-001', // Added uid to satisfy type requirement
     employeeName: 'Alex Rivera',
-    employeeRole: 'Admin', // Added employeeRole to satisfy type requirement
-    department: 'რითეილი', // Added department to satisfy type requirement
     date: 'Jun 1, 2024',
     checkIn: '08:55:20',
     status: 'Complete',

@@ -1,11 +1,12 @@
 
 import { 
   doc, 
+  writeBatch,
   setDoc
 } from 'firebase/firestore';
 import { db } from './firebase';
 import { User, AttendanceRecord, VacationRecord, CashDeskRecord, BranchConfig, PositionMapping } from '../types';
-import { SystemSettings, Database } from './database';
+import { SystemSettings } from './database';
 
 const COLLECTIONS = {
   USERS: 'users',
@@ -97,7 +98,12 @@ export const MigrationService = {
       const localEmployeesStr = localStorage.getItem('zenith_local_employees');
       if (localEmployeesStr) {
         const employees = JSON.parse(localEmployeesStr) as User[];
-        await Database.setEmployees(employees);
+        const batch = writeBatch(db);
+        employees.forEach(emp => {
+          const key = emp.uid || emp.id;
+          batch.set(doc(db, COLLECTIONS.USERS, key), emp, { merge: true });
+        });
+        await batch.commit();
         report.itemsMigrated.employees = employees.length;
       }
     } catch (error: any) { report.errors.push(`Employees migration error: ${error.message}`); }
@@ -108,7 +114,9 @@ export const MigrationService = {
       const localAttendanceStr = localStorage.getItem('zenith_local_attendance');
       if (localAttendanceStr) {
         const logs = JSON.parse(localAttendanceStr) as AttendanceRecord[];
-        await Database.saveAttendanceBatch(logs);
+        const batch = writeBatch(db);
+        logs.forEach(log => batch.set(doc(db, COLLECTIONS.ATTENDANCE, log.id), log, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.attendance = logs.length;
       }
     } catch (error: any) { report.errors.push(`Attendance migration error: ${error.message}`); }
@@ -119,10 +127,9 @@ export const MigrationService = {
       const localVacationsStr = localStorage.getItem('zenith_local_vacations');
       if (localVacationsStr) {
         const vacations = JSON.parse(localVacationsStr) as VacationRecord[];
-        // Note: Vacations usually small, but let's be safe.
-        for (const v of vacations) {
-          await Database.saveVacation(v);
-        }
+        const batch = writeBatch(db);
+        vacations.forEach(vac => batch.set(doc(db, COLLECTIONS.VACATIONS, vac.id), vac, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.vacations = vacations.length;
       }
     } catch (error: any) { report.errors.push(`Vacations migration error: ${error.message}`); }
@@ -133,9 +140,9 @@ export const MigrationService = {
       const localCashStr = localStorage.getItem('zenith_local_cash_history');
       if (localCashStr) {
         const cashRecords = JSON.parse(localCashStr) as CashDeskRecord[];
-        for (const rec of cashRecords) {
-          await Database.saveCashRecord(rec);
-        }
+        const batch = writeBatch(db);
+        cashRecords.forEach(rec => batch.set(doc(db, COLLECTIONS.CASH_HISTORY, rec.id), rec, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.cashHistory = cashRecords.length;
       }
     } catch (error: any) { report.errors.push(`Cash history migration error: ${error.message}`); }
@@ -146,7 +153,9 @@ export const MigrationService = {
       const localBranchesStr = localStorage.getItem('zenith_local_branches');
       if (localBranchesStr) {
         const branches = JSON.parse(localBranchesStr) as BranchConfig[];
-        await Database.setBranches(branches);
+        const batch = writeBatch(db);
+        branches.forEach(branch => batch.set(doc(db, COLLECTIONS.BRANCHES, branch.name), branch, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.branches = branches.length;
       }
     } catch (error: any) { report.errors.push(`Branches migration error: ${error.message}`); }
@@ -157,9 +166,9 @@ export const MigrationService = {
       const localBalancesStr = localStorage.getItem('zenith_local_branch_balances');
       if (localBalancesStr) {
         const balances = JSON.parse(localBalancesStr) as Record<string, number>;
-        for (const [branchName, amount] of Object.entries(balances)) {
-          await Database.updateBranchBalance(branchName, amount);
-        }
+        const batch = writeBatch(db);
+        Object.entries(balances).forEach(([branchName, amount]) => batch.set(doc(db, COLLECTIONS.BRANCH_BALANCES, branchName), { amount }, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.branchBalances = Object.keys(balances).length;
       }
     } catch (error: any) { report.errors.push(`Branch balances migration error: ${error.message}`); }
@@ -170,7 +179,9 @@ export const MigrationService = {
       const localPositionsStr = localStorage.getItem('zenith_local_positions');
       if (localPositionsStr) {
         const positions = JSON.parse(localPositionsStr) as PositionMapping[];
-        await Database.setPositions(positions);
+        const batch = writeBatch(db);
+        positions.forEach(pos => batch.set(doc(db, COLLECTIONS.POSITIONS, pos.title), pos, { merge: true }));
+        await batch.commit();
         report.itemsMigrated.positions = positions.length;
       }
     } catch (error: any) { report.errors.push(`Positions migration error: ${error.message}`); }
@@ -181,7 +192,7 @@ export const MigrationService = {
       const localDeptsStr = localStorage.getItem('zenith_local_departments');
       if (localDeptsStr) {
         const departments = JSON.parse(localDeptsStr) as string[];
-        await Database.setDepartments(departments);
+        await setDoc(doc(db, COLLECTIONS.DEPARTMENTS, 'list'), { items: departments }, { merge: true });
         report.itemsMigrated.departments = departments.length;
       }
     } catch (error: any) { report.errors.push(`Departments migration error: ${error.message}`); }
@@ -192,7 +203,7 @@ export const MigrationService = {
       const localSettingsStr = localStorage.getItem('zenith_local_settings');
       if (localSettingsStr) {
         const settings = JSON.parse(localSettingsStr) as SystemSettings;
-        await Database.setSettings(settings);
+        await setDoc(doc(db, COLLECTIONS.SETTINGS, 'system'), settings, { merge: true });
         report.itemsMigrated.settings = true;
       }
     } catch (error: any) { report.errors.push(`Settings migration error: ${error.message}`); }

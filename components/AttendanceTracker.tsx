@@ -31,20 +31,14 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  // Standardized Date format for better aggregation keys (YYYY-MM-DD)
-  const dateKey = useMemo(() => {
-    const d = currentTime;
-    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-  }, [currentTime]);
-
-  const todayDisplayStr = useMemo(() => 
+  const todayDateStr = useMemo(() => 
     currentTime.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
     [currentTime]
   );
 
   const hasCheckedInToday = useMemo(() => {
-    return attendanceLogs.some(log => (log.date === dateKey || log.date === todayDisplayStr) && log.employeeId === user.id);
-  }, [attendanceLogs, user.id, dateKey, todayDisplayStr]);
+    return attendanceLogs.some(log => log.date === todayDateStr && log.employeeId === user.id);
+  }, [attendanceLogs, user.id, todayDateStr]);
 
   const isAttendanceEnabled = useMemo(() => {
     if (!settings) return false;
@@ -65,26 +59,20 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
   };
 
   const handleArrive = () => {
-    if (hasCheckedInToday || !user.branch || !isAttendanceEnabled || !user.uid) return;
+    if (hasCheckedInToday || !user.branch || !isAttendanceEnabled) return;
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
     const isLate = calculateLateness(now);
-    
-    // REDESIGN: Denormalizing user data into the record for instant reporting
     const newRecord: AttendanceRecord = {
-      id: `ATT-${Date.now()}-${user.id}`,
+      id: Math.random().toString(36).substr(2, 9),
       employeeId: user.id,
-      uid: user.uid, 
       employeeName: user.name,
-      employeeRole: user.role,
-      department: user.department,
-      branch: user.branch,
-      date: dateKey,
+      date: todayDateStr,
       checkIn: timeStr,
       status: 'Complete',
+      branch: user.branch,
       isLate
     };
-    
     onAddRecord(newRecord);
     onUpdateUser({ checkedIn: true, lastCheckIn: timeStr });
   };
@@ -95,6 +83,7 @@ const AttendanceTracker: React.FC<AttendanceTrackerProps> = ({
     }
   };
 
+  // If attendance is not enabled, we hide the entire component or just the tracker card
   if (settings && !isAttendanceEnabled) {
     return null;
   }

@@ -10,17 +10,10 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <style>
-      :root {
-        --header-font: 'Inter', sans-serif;
-        --body-font: 'Inter', sans-serif;
-      }
       body {
-        font-family: var(--body-font);
+        font-family: 'Inter', sans-serif;
         background-color: #f8fafc;
-        line-height: 1.625;
-      }
-      h1, h2, h3, h4, h5, h6, .font-black {
-        font-family: var(--header-font);
+        line-height: 1.625; /* leading-relaxed equivalent */
       }
       .custom-scrollbar::-webkit-scrollbar {
         width: 6px;
@@ -31,6 +24,11 @@
       .custom-scrollbar::-webkit-scrollbar-thumb {
         background: #e2e8f0;
         border-radius: 10px;
+      }
+      @keyframes float {
+        0% { transform: translateY(0px); }
+        50% { transform: translateY(-10px); }
+        100% { transform: translateY(0px); }
       }
     </style>
   <script type="importmap">

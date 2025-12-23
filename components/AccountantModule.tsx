@@ -1,9 +1,8 @@
 
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { CashDeskRecord, BranchConfig, User } from '../types';
+import React, { useState, useMemo, useEffect } from 'react';
+import { CashDeskRecord, BranchConfig } from '../types';
 import { Icons } from '../constants';
 import { Database } from '../services/database';
-import { where, orderBy, QueryConstraint, QueryDocumentSnapshot, limit, startAfter } from 'firebase/firestore';
 
 interface AccountantModuleProps {
   branches: BranchConfig[];
@@ -12,458 +11,342 @@ interface AccountantModuleProps {
   onDeleteCashRecord: (id: string) => Promise<void>;
 }
 
-const PAGE_SIZE = 50;
-
-const AccountantModule: React.FC<AccountantModuleProps> = ({ branches, onDeleteCashRecord, onUpdateCashHistory }) => {
-  const [history, setHistory] = useState<CashDeskRecord[]>([]);
-  const [branchBalances, setBranchBalances] = useState<Record<string, number>>({});
-  const [lastDoc, setLastDoc] = useState<QueryDocumentSnapshot | null>(null);
-  const [totalCount, setTotalCount] = useState(0);
-  const [isLoading, setIsLoading] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-  
-  // Balance Management State
-  const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
-  const [balanceForm, setBalanceForm] = useState({ branch: '', amount: '' });
-  const [isUpdatingBalance, setIsUpdatingBalance] = useState(false);
-
-  // Edit Record State
+const AccountantModule: React.FC<AccountantModuleProps> = ({ branches, cashHistory, onUpdateCashHistory, onDeleteCashRecord }) => {
   const [editingRecord, setEditingRecord] = useState<CashDeskRecord | null>(null);
-  const [isEditRecordModalOpen, setIsEditRecordModalOpen] = useState(false);
-
+  const [balances, setBalances] = useState<Record<string, number>>({});
+  
   const [filters, setFilters] = useState({
     branch: '',
     startDate: '',
     endDate: '',
-    cashierName: ''
+    cashier: '',
+    minCash: '',
+    maxCash: '',
+    minTerminal: '',
+    maxTerminal: '',
+    minIncasation: '',
+    maxIncasation: ''
   });
 
-  const fetchBalances = useCallback(async () => {
-    const bals = await Database.getAllBranchBalances();
-    setBranchBalances(bals);
-  }, []);
-
-  const fetchHistory = useCallback(async (isNextPage: boolean = false) => {
-    setIsLoading(true);
-    const constraints: QueryConstraint[] = [];
-    
-    if (filters.branch) constraints.push(where('branch', '==', filters.branch));
-    if (filters.startDate) constraints.push(where('date', '>=', filters.startDate));
-    if (filters.endDate) constraints.push(where('date', '<=', filters.endDate));
-    
-    constraints.push(orderBy('date', 'desc'));
-
-    try {
-      const result = await Database.getCashHistory(
-        constraints, 
-        PAGE_SIZE, 
-        isNextPage ? (lastDoc || undefined) : undefined
-      );
-      
-      let finalData = result.data;
-      if (filters.cashierName) {
-        finalData = finalData.filter(r => 
-          r.cashierName.toLowerCase().includes(filters.cashierName.toLowerCase())
-        );
-      }
-
-      if (isNextPage) {
-        setHistory(prev => [...prev, ...finalData]);
-      } else {
-        setHistory(finalData);
-        setTotalCount(result.totalCount);
-      }
-      
-      setLastDoc(result.lastVisible);
-      setHasMore(result.data.length === PAGE_SIZE);
-    } catch (error) {
-      console.error("Accountant Fetch Error:", error);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [filters, lastDoc]);
-
   useEffect(() => {
-    fetchBalances();
-  }, [fetchBalances]);
+    const loadBalances = async () => {
+      const b: Record<string, number> = {};
+      for (const branch of branches) {
+        b[branch.name] = await Database.getBranchBalance(branch.name);
+      }
+      setBalances(b);
+    };
+    loadBalances();
+  }, [branches]);
 
-  useEffect(() => {
-    setLastDoc(null);
-    setHasMore(true);
-    fetchHistory(false);
-  }, [filters.branch, filters.startDate, filters.endDate, filters.cashierName]);
-
-  const handleUpdateStartingBalance = async () => {
-    if (!balanceForm.branch || !balanceForm.amount) {
-      alert("გთხოვთ შეავსოთ ყველა ველი");
-      return;
-    }
-    setIsUpdatingBalance(true);
-    try {
-      const amount = parseFloat(balanceForm.amount);
-      await Database.updateBranchBalance(balanceForm.branch, amount);
-      setBranchBalances(prev => ({ ...prev, [balanceForm.branch]: amount }));
-      setIsBalanceModalOpen(false);
-      setBalanceForm({ branch: '', amount: '' });
-    } catch (error) {
-      console.error(error);
-      alert("შეცდომა ნაშთის განახლებისას");
-    } finally {
-      setIsUpdatingBalance(false);
-    }
+  const handleFilterChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setFilters(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleEditBranchBalance = (branchName: string) => {
-    setBalanceForm({
-      branch: branchName,
-      amount: (branchBalances[branchName] || 0).toString()
-    });
-    setIsBalanceModalOpen(true);
+  const totals = useMemo(() => {
+    const today = new Date().toISOString().split('T')[0];
+    const todayRecs = cashHistory.filter(r => r.date === today);
+    return {
+      todayRevenue: todayRecs.reduce((sum, r) => sum + r.cash + r.terminal, 0),
+      todayCash: todayRecs.reduce((sum, r) => sum + r.cash, 0),
+      todayTerminal: todayRecs.reduce((sum, r) => sum + r.terminal, 0),
+      reportsCount: todayRecs.length
+    };
+  }, [cashHistory]);
+
+  const filteredHistory = useMemo(() => {
+    return cashHistory.filter(rec => {
+      const matchBranch = filters.branch ? rec.branch === filters.branch : true;
+      const matchCashier = filters.cashier ? rec.cashierName.toLowerCase().includes(filters.cashier.toLowerCase()) : true;
+      
+      const recDate = new Date(rec.date);
+      const start = filters.startDate ? new Date(filters.startDate) : null;
+      const end = filters.endDate ? new Date(filters.endDate) : null;
+      
+      let matchDate = true;
+      if (start) {
+        start.setHours(0, 0, 0, 0);
+        matchDate = matchDate && recDate >= start;
+      }
+      if (end) {
+        end.setHours(23, 59, 59, 999);
+        matchDate = matchDate && recDate <= end;
+      }
+
+      const matchMinCash = filters.minCash ? rec.cash >= parseFloat(filters.minCash) : true;
+      const matchMaxCash = filters.maxCash ? rec.cash <= parseFloat(filters.maxCash) : true;
+      const matchMinTerminal = filters.minTerminal ? rec.terminal >= parseFloat(filters.minTerminal) : true;
+      const matchMaxTerminal = filters.maxTerminal ? rec.terminal <= parseFloat(filters.maxTerminal) : true;
+      const matchMinIncas = filters.minIncasation ? rec.incasation >= parseFloat(filters.minIncasation) : true;
+      const matchMaxIncas = filters.maxIncasation ? rec.incasation <= parseFloat(filters.maxIncasation) : true;
+
+      return matchBranch && matchDate && matchCashier && 
+             matchMinCash && matchMaxCash && 
+             matchMinTerminal && matchMaxTerminal && 
+             matchMinIncas && matchMaxIncas;
+    }).sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  }, [cashHistory, filters]);
+
+  const handleUpdateBalance = async (branchName: string, value: string) => {
+    const newVal = parseFloat(value) || 0;
+    await Database.updateBranchBalance(branchName, newVal);
+    setBalances(prev => ({ ...prev, [branchName]: newVal }));
+  };
+
+  const handleSaveEdit = async () => {
+    if (editingRecord) {
+      const updated = cashHistory.map(r => r.id === editingRecord.id ? editingRecord : r);
+      await onUpdateCashHistory(updated);
+      setEditingRecord(null);
+    }
   };
 
   const handleDeleteRecord = async (id: string) => {
-    if (window.confirm("ნამდვილად გსურთ ამ ჩანაწერის წაშლა? ეს არ შეცვლის ფილიალის მიმდინარე ნაშთს ავტომატურად.")) {
-      try {
-        await onDeleteCashRecord(id);
-        setHistory(prev => prev.filter(r => r.id !== id));
-        setTotalCount(prev => prev - 1);
-      } catch (error) {
-        alert("შეცდომა წაშლისას");
-      }
+    if (window.confirm("დარწმუნებული ხართ რომ გსურთ ჩანაწერის წაშლა?")) {
+      await onDeleteCashRecord(id);
     }
   };
 
-  const handleSaveEditedRecord = async () => {
-    if (!editingRecord) return;
-    try {
-      await onUpdateCashHistory([editingRecord]);
-      setIsEditRecordModalOpen(false);
-      setEditingRecord(null);
-      fetchHistory(false);
-    } catch (error) {
-      alert("შეცდომა შენახვისას");
-    }
-  };
-
-  const handleExportCSV = () => {
-    if (history.length === 0) {
-      alert("რეპორტში მონაცემები არ არის საექსპორტოდ.");
+  const handleDownloadReport = () => {
+    if (filteredHistory.length === 0) {
+      alert("ჩამოსატვირთი მონაცემები არ არის.");
       return;
     }
-    const headers = [
-      "ID", "თარიღი", "ფილიალი", "მოლარე", "საწყისი ნაშთი", 
-      "ნაღდი", "ტერმინალი", "ინკასაცია", "საბოლოო ნაშთი", 
-      "გაუქმებული ჩეკი", "გაუქმებული თანხა", "გაუქმების მიზეზი"
-    ];
-    
-    const rows = history.map(r => [
-      r.id,
-      r.date,
-      r.branch,
-      r.cashierName,
-      r.openingBalance.toFixed(2),
-      r.cash.toFixed(2),
-      r.terminal.toFixed(2),
-      r.incasation.toFixed(2),
-      r.closingBalance.toFixed(2),
-      r.cancelledCheck?.number || "—",
-      r.cancelledCheck?.amount.toFixed(2) || "0.00",
-      r.cancelledCheck?.reason || "—"
-    ]);
+    const headers = ["თარიღი", "ფილიალი", "მოლარე", "საწყისი ნაშთი", "ნაღდი", "ტერმინალი", "ინკასაცია", "გაუქმებული ჩეკი", "საბოლოო ნაშთი"];
+    const csvRows = filteredHistory.map(rec => [
+      rec.date,
+      rec.branch,
+      rec.cashierName,
+      rec.openingBalance.toFixed(2),
+      rec.cash.toFixed(2),
+      rec.terminal.toFixed(2),
+      rec.incasation.toFixed(2),
+      rec.cancelledCheck ? `${rec.cancelledCheck.amount} (${rec.cancelledCheck.number})` : "—",
+      rec.closingBalance.toFixed(2)
+    ].join(","));
 
-    const csvContent = [headers, ...rows].map(row => row.join(",")).join("\n");
-    const blob = new Blob(["\uFEFF" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const csvContent = [headers.join(","), ...csvRows].join("\n");
+    const blob = new Blob(["\ufeff" + csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
-    link.href = URL.createObjectURL(blob);
-    link.download = `finance_report_${filters.branch || 'all'}_${new Date().toISOString().split('T')[0]}.csv`;
+    link.href = url;
+    link.download = `სალაროს_რეპორტი_${new Date().toISOString().split('T')[0]}.csv`;
     link.click();
   };
 
-  const totalCompanyCash = Object.values(branchBalances).reduce((a, b) => a + b, 0);
+  const resetFilters = () => {
+    setFilters({
+      branch: '',
+      startDate: '',
+      endDate: '',
+      cashier: '',
+      minCash: '',
+      maxCash: '',
+      minTerminal: '',
+      maxTerminal: '',
+      minIncasation: '',
+      maxIncasation: ''
+    });
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 pb-20">
-      {/* Header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase leading-none">ბუღალტერია</h2>
-          <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest mt-2 flex items-center gap-3">
-             <span className="bg-indigo-600 text-white px-2 py-0.5 rounded-[2px] shadow-sm">ჯამი: {totalCompanyCash.toFixed(2)} ₾</span>
-             <span className="text-slate-400 font-black">ფინანსური კონტროლი</span>
-          </p>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-2">
+           <div className="w-8 h-8 bg-indigo-600 rounded-[5px] flex items-center justify-center text-white">
+              <Icons.Wallet />
+           </div>
+           <h2 className="text-2xl font-black text-slate-900 tracking-tight uppercase leading-none">ბუღალტერია</h2>
         </div>
+        <p className="text-slate-500 font-bold text-[10px] uppercase tracking-widest ml-10">ფინანსური რეპორტების მართვა</p>
       </div>
 
-      {/* Compact Branch Totals Grid */}
-      <section className="space-y-3">
-        <div className="flex items-center gap-2 mb-1">
-           <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">ფილიალების ნაშთები</h3>
-           <div className="h-[1px] flex-1 bg-slate-100"></div>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+         <div className="bg-white p-8 rounded-[5px] border border-slate-200 shadow-sm space-y-2">
+            <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest leading-none">დღევანდელი ჯამური ნავაჭრი</p>
+            <h4 className="text-4xl font-black text-slate-900 tabular-nums">{totals.todayRevenue.toFixed(2)} ₾</h4>
+            <p className="text-[9px] font-bold text-slate-400 uppercase tracking-widest pt-2 border-t border-slate-50">{totals.reportsCount} ფილიალის რეპორტი</p>
+         </div>
+         <div className="bg-emerald-50 p-8 rounded-[5px] border border-emerald-100 shadow-sm space-y-2">
+            <p className="text-[10px] font-black text-emerald-600 uppercase tracking-widest leading-none">ჯამური ნაღდი (დღეს)</p>
+            <h4 className="text-4xl font-black text-emerald-700 tabular-nums">{totals.todayCash.toFixed(2)} ₾</h4>
+         </div>
+         <div className="bg-blue-50 p-8 rounded-[5px] border border-blue-100 shadow-sm space-y-2">
+            <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest leading-none">ჯამური ტერმინალი (დღეს)</p>
+            <h4 className="text-4xl font-black text-blue-700 tabular-nums">{totals.todayTerminal.toFixed(2)} ₾</h4>
+         </div>
+      </div>
+
+      <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+          <h3 className="text-[10px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-2">
+            ფილიალების ნაშთების მართვა
+          </h3>
         </div>
-        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {branches.map(branch => {
-            const balance = branchBalances[branch.name] || 0;
-            return (
-              <div key={branch.name} className="bg-white rounded-[4px] border border-slate-200 p-3 shadow-sm hover:border-indigo-400 transition-all group relative overflow-hidden">
-                <div className="flex justify-between items-start">
-                  <p className="text-[8px] font-black text-slate-400 uppercase tracking-widest truncate pr-4">{branch.name}</p>
-                  <button 
-                    onClick={() => handleEditBranchBalance(branch.name)}
-                    className="text-slate-300 hover:text-indigo-600 transition-all p-1 -mt-1 -mr-1"
-                  >
-                    <Icons.Edit />
-                  </button>
-                </div>
-                <h4 className="text-sm font-black text-slate-900 mt-1 tabular-nums">{balance.toFixed(2)} ₾</h4>
-                <div className="absolute bottom-0 left-0 h-0.5 bg-indigo-500/20 w-full">
-                  <div className="h-full bg-indigo-500" style={{ width: `${Math.min(100, (balance / Math.max(1, totalCompanyCash)) * 100)}%` }}></div>
-                </div>
+        <div className="p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 gap-4">
+          {branches.map(branch => (
+            <div key={branch.name} className="p-3 rounded-[5px] border border-slate-100 bg-slate-50/30">
+              <label className="text-[8px] font-black text-slate-400 uppercase tracking-widest block mb-1.5 truncate">
+                {branch.name}
+              </label>
+              <div className="relative">
+                <input 
+                  type="number" 
+                  value={balances[branch.name] || 0}
+                  onChange={(e) => setBalances(prev => ({ ...prev, [branch.name]: parseFloat(e.target.value) || 0 }))}
+                  onBlur={(e) => handleUpdateBalance(branch.name, e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-[3px] px-2.5 py-2 text-[11px] font-black text-slate-700 outline-none focus:border-indigo-500"
+                />
+                <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[9px] font-black text-slate-300">₾</span>
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
       </section>
 
-      {/* Advanced Filters with Export Button */}
-      <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm p-6 space-y-6">
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <div className="space-y-1.5">
+      <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
+        <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <h3 className="text-xs font-black text-slate-900 uppercase flex items-center gap-2">
+            <Icons.Search /> ფილტრაცია და რეპორტინგი
+          </h3>
+          <div className="flex gap-2">
+            <button onClick={resetFilters} className="px-4 py-2 text-[10px] font-black uppercase text-slate-400 hover:text-slate-600 transition-colors">გასუფთავება</button>
+            <button onClick={handleDownloadReport} className="flex items-center gap-2 px-6 py-2 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all shadow-md">
+              <Icons.Newspaper /> EXCEL-ში ექსპორტი
+            </button>
+          </div>
+        </div>
+        
+        <div className="p-8 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="space-y-1">
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ფილიალი</label>
-            <select 
-              value={filters.branch} 
-              onChange={e => setFilters({...filters, branch: e.target.value})} 
-              className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-black outline-none focus:border-indigo-500 transition-colors"
-            >
+            <select name="branch" value={filters.branch} onChange={handleFilterChange} className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none">
               <option value="">ყველა ფილიალი</option>
               {branches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
             </select>
           </div>
-          <div className="space-y-1.5">
-            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">თარიღი (დან)</label>
-            <input 
-              type="date"
-              value={filters.startDate}
-              onChange={e => setFilters({...filters, startDate: e.target.value})}
-              className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-black outline-none focus:border-indigo-500"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">თარიღი (მდე)</label>
-            <input 
-              type="date"
-              value={filters.endDate}
-              onChange={e => setFilters({...filters, endDate: e.target.value})}
-              className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-black outline-none focus:border-indigo-500"
-            />
-          </div>
-          <div className="space-y-1.5">
+          <div className="space-y-1">
             <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">მოლარე</label>
-            <input 
-              type="text"
-              placeholder="ძებნა სახელით..."
-              value={filters.cashierName}
-              onChange={e => setFilters({...filters, cashierName: e.target.value})}
-              className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-3 py-2 text-[11px] font-black outline-none focus:border-indigo-500"
-            />
+            <input name="cashier" type="text" placeholder="სახელი..." value={filters.cashier} onChange={handleFilterChange} className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none" />
           </div>
-        </div>
-        <div className="pt-2 flex justify-end">
-           <button 
-              onClick={handleExportCSV}
-              className="px-8 py-2.5 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-600 transition-all flex items-center gap-3 shadow-lg hover:-translate-y-0.5 active:scale-95"
-            >
-              <Icons.Newspaper /> ექსპორტი (CSV)
-            </button>
+          <div className="space-y-1">
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">თარიღი (დან)</label>
+            <input name="startDate" type="date" value={filters.startDate} onChange={handleFilterChange} className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none" />
+          </div>
+          <div className="space-y-1">
+            <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">თარიღი (მდე)</label>
+            <input name="endDate" type="date" value={filters.endDate} onChange={handleFilterChange} className="w-full bg-slate-50 border border-slate-200 rounded-[5px] px-4 py-2.5 text-[11px] font-bold outline-none" />
+          </div>
         </div>
       </section>
 
-      {/* Main Financial Report Table */}
       <section className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-        <div className="p-4 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-            <h3 className="text-[10px] font-black text-slate-800 uppercase tracking-widest">ოპერაციების ისტორია</h3>
-            <span className="text-[8px] font-bold text-slate-400 uppercase">ნაჩვენებია {history.length} ჩანაწერი</span>
-        </div>
-        <div className="overflow-x-auto custom-scrollbar">
+        <div className="overflow-x-auto">
           <table className="w-full text-left">
             <thead>
-              <tr className="bg-slate-50/80 text-slate-400 text-[8px] font-black uppercase tracking-widest border-b border-slate-100 whitespace-nowrap">
-                <th className="px-5 py-4">თარიღი</th>
-                <th className="px-5 py-4">ფილიალი</th>
-                <th className="px-5 py-4">მოლარე</th>
-                <th className="px-5 py-4 text-right">საწყისი</th>
-                <th className="px-5 py-4 text-right">ნაღდი</th>
-                <th className="px-5 py-4 text-right">ტერმინალი</th>
-                <th className="px-5 py-4 text-right">ინკასაცია</th>
-                <th className="px-5 py-4 text-right">საბოლოო</th>
-                <th className="px-5 py-4">გაუქმებული</th>
-                <th className="px-5 py-4 text-right">ქმედება</th>
+              <tr className="bg-slate-50/50 text-slate-400 text-[8px] font-black uppercase tracking-widest border-b border-slate-100">
+                <th className="px-8 py-6">თარიღი</th>
+                <th className="px-8 py-6">ფილიალი</th>
+                <th className="px-8 py-6">მოლარე</th>
+                <th className="px-8 py-6 text-right">ნაღდი</th>
+                <th className="px-8 py-6 text-right">ტერმინალი</th>
+                <th className="px-8 py-6 text-right">ინკასაცია</th>
+                <th className="px-8 py-6 text-right">გაუქმება</th>
+                <th className="px-8 py-6 text-right">საბოლოო ნაშთი</th>
+                <th className="px-8 py-6 text-right">ქმედება</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {history.map((rec) => (
-                <tr key={rec.id} className="hover:bg-slate-50/50 transition-colors text-[10px] whitespace-nowrap group">
-                  <td className="px-5 py-4 font-bold text-slate-700">{rec.date}</td>
-                  <td className="px-5 py-4 text-indigo-600 font-black uppercase">{rec.branch}</td>
-                  <td className="px-5 py-4 font-bold text-slate-600">{rec.cashierName}</td>
-                  <td className="px-5 py-4 text-right font-black text-slate-400">{rec.openingBalance.toFixed(2)} ₾</td>
-                  <td className="px-5 py-4 text-right font-black text-emerald-600">+{rec.cash.toFixed(2)} ₾</td>
-                  <td className="px-5 py-4 text-right font-black text-blue-500">{rec.terminal.toFixed(2)} ₾</td>
-                  <td className="px-5 py-4 text-right font-black text-rose-500">-{rec.incasation.toFixed(2)} ₾</td>
-                  <td className="px-5 py-4 text-right font-black text-indigo-600 bg-indigo-50/20">{rec.closingBalance.toFixed(2)} ₾</td>
-                  <td className="px-5 py-4">
+              {filteredHistory.map((rec) => (
+                <tr key={rec.id} className="hover:bg-slate-50/30 transition-colors text-[10px]">
+                  <td className="px-8 py-6 font-bold whitespace-nowrap">{rec.date}</td>
+                  <td className="px-8 py-6 text-indigo-600 font-black uppercase whitespace-nowrap">{rec.branch}</td>
+                  <td className="px-8 py-6 font-bold whitespace-nowrap">{rec.cashierName}</td>
+                  <td className="px-8 py-6 text-right font-black text-emerald-600 tabular-nums">{rec.cash.toFixed(2)} ₾</td>
+                  <td className="px-8 py-6 text-right font-black text-blue-600 tabular-nums">{rec.terminal.toFixed(2)} ₾</td>
+                  <td className="px-8 py-6 text-right font-black text-rose-600 tabular-nums">{rec.incasation.toFixed(2)} ₾</td>
+                  <td className="px-8 py-6 text-right whitespace-nowrap">
                     {rec.cancelledCheck ? (
-                      <div className="flex flex-col">
-                        <span className="font-black text-rose-500 text-[9px] leading-none">#{rec.cancelledCheck.number}</span>
-                        <span className="text-[8px] font-bold text-slate-400 uppercase mt-0.5">{rec.cancelledCheck.amount.toFixed(2)} ₾</span>
+                      <div className="flex flex-col items-end">
+                        <span className="font-black text-rose-500 leading-none">{rec.cancelledCheck.amount.toFixed(2)} ₾</span>
+                        <span className="text-[8px] font-bold text-slate-400 mt-1 uppercase tracking-tighter">#{rec.cancelledCheck.number}</span>
                       </div>
                     ) : (
-                      <span className="text-slate-200">—</span>
+                      <span className="text-slate-300">—</span>
                     )}
                   </td>
-                  <td className="px-5 py-4 text-right">
-                    <div className="flex items-center justify-end gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                       <button onClick={() => { setEditingRecord(rec); setIsEditRecordModalOpen(true); }} className="p-1.5 text-slate-300 hover:text-indigo-600 transition-colors"><Icons.Edit /></button>
-                       <button onClick={() => handleDeleteRecord(rec.id)} className="p-1.5 text-slate-300 hover:text-rose-500 transition-colors"><Icons.Trash /></button>
+                  <td className="px-8 py-6 text-right font-black text-indigo-600 tabular-nums bg-indigo-50/20">{rec.closingBalance.toFixed(2)} ₾</td>
+                  <td className="px-8 py-6 text-right">
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => setEditingRecord({...rec})} className="p-2 text-slate-400 hover:text-indigo-600"><Icons.Edit /></button>
+                      <button onClick={() => handleDeleteRecord(rec.id)} className="p-2 text-slate-400 hover:text-rose-500"><Icons.Trash /></button>
                     </div>
                   </td>
                 </tr>
               ))}
-              {history.length === 0 && !isLoading && (
-                 <tr>
-                    <td colSpan={10} className="px-8 py-20 text-center text-slate-300 italic text-[10px] font-black uppercase tracking-[0.2em]">მონაცემები არ მოიძებნა</td>
-                 </tr>
+              {filteredHistory.length === 0 && (
+                <tr>
+                  <td colSpan={9} className="p-24 text-center">
+                    <p className="text-slate-400 font-bold text-[10px] uppercase italic tracking-widest">რეპორტები ამ ფილტრებით არ მოიძებნა</p>
+                  </td>
+                </tr>
               )}
             </tbody>
           </table>
         </div>
-        
-        {hasMore && (
-          <div className="p-8 text-center border-t border-slate-100 bg-slate-50/30">
-            <button 
-              onClick={() => fetchHistory(true)} 
-              disabled={isLoading}
-              className="px-12 py-3 bg-white border border-slate-200 rounded-[5px] text-[9px] font-black uppercase tracking-widest hover:border-indigo-600 hover:text-indigo-600 transition-all shadow-sm active:scale-95 flex items-center justify-center gap-3 mx-auto disabled:opacity-50"
-            >
-              {isLoading && <div className="w-3 h-3 border-2 border-indigo-600/20 border-t-indigo-600 rounded-full animate-spin"></div>}
-              {isLoading ? 'იტვირთება...' : 'მეტის ნახვა'}
-            </button>
-          </div>
-        )}
       </section>
 
-      {/* Edit Balance Modal */}
-      {isBalanceModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsBalanceModalOpen(false)}></div>
-          <div className="relative bg-white w-full max-w-md rounded-[5px] shadow-3xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-              <h3 className="text-[11px] font-black uppercase text-slate-900 tracking-tight">ნაშთის კორექტირება</h3>
-              <button onClick={() => setIsBalanceModalOpen(false)} className="text-slate-400 hover:text-slate-600 transition-colors"><Icons.X /></button>
+      {editingRecord && (
+        <div className="fixed inset-0 bg-slate-900/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white rounded-[5px] w-full max-w-lg overflow-hidden shadow-2xl animate-in zoom-in-95 duration-200">
+            <div className="p-5 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
+               <h4 className="text-sm font-black uppercase text-slate-900">რედაქტირება</h4>
+               <button onClick={() => setEditingRecord(null)} className="text-slate-400 hover:text-slate-600"><Icons.X /></button>
             </div>
             <div className="p-8 space-y-6">
-               <div className="space-y-1.5">
-                 <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ფილიალი</label>
-                 <div className="w-full bg-slate-100 border border-slate-200 px-4 py-3 rounded-[5px] text-xs font-black text-slate-500 uppercase">
-                    {balanceForm.branch}
-                 </div>
-               </div>
-               <div className="space-y-1.5">
-                 <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ახალი ნაშთი (₾)</label>
-                 <input 
-                   type="number" 
-                   step="0.01"
-                   value={balanceForm.amount} 
-                   onChange={e => setBalanceForm({ ...balanceForm, amount: e.target.value })} 
-                   placeholder="0.00"
-                   className="w-full bg-slate-50 border border-slate-200 px-4 py-3 rounded-[5px] text-base font-black outline-none transition-all focus:border-indigo-600" 
-                 />
-               </div>
-               <div className="bg-amber-50 p-4 rounded-[4px] border border-amber-100 flex gap-3">
-                  <div className="text-amber-500 mt-0.5"><Icons.Alert /></div>
-                  <p className="text-[9px] font-bold text-amber-700 uppercase leading-relaxed">ეს ოპერაცია პირდაპირ ცვლის ფილიალის მიმდინარე ნაშთს ბაზაში.</p>
-               </div>
-            </div>
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
-               <button onClick={() => setIsBalanceModalOpen(false)} className="flex-1 py-3 bg-white border border-slate-200 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-colors">გაუქმება</button>
-               <button onClick={handleUpdateStartingBalance} disabled={isUpdatingBalance} className="flex-2 py-3 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-indigo-700 transition-all flex items-center justify-center gap-2 shadow-lg">
-                 {isUpdatingBalance ? <div className="w-3 h-3 border-2 border-white/20 border-t-white rounded-full animate-spin"></div> : <Icons.Check />}
-                 შენახვა
-               </button>
-            </div>
-          </div>
-        </div>
-      )}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ნაღდი ფული</label>
+                  <input type="number" value={editingRecord.cash} onChange={e => setEditingRecord({...editingRecord, cash: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ტერმინალი</label>
+                  <input type="number" value={editingRecord.terminal} onChange={e => setEditingRecord({...editingRecord, terminal: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ინკასაცია</label>
+                  <input type="number" value={editingRecord.incasation} onChange={e => setEditingRecord({...editingRecord, incasation: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                </div>
+                <div className="space-y-1">
+                  <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">დახურვის ნაშთი</label>
+                  <input type="number" value={editingRecord.closingBalance} onChange={e => setEditingRecord({...editingRecord, closingBalance: parseFloat(e.target.value) || 0})} className="w-full bg-slate-100 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                </div>
+              </div>
 
-      {/* Edit Record Modal */}
-      {isEditRecordModalOpen && editingRecord && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsEditRecordModalOpen(false)}></div>
-          <div className="relative bg-white w-full max-w-2xl rounded-[5px] shadow-3xl overflow-hidden animate-in zoom-in-95 duration-200">
-            <div className="p-6 border-b border-slate-100 bg-slate-50 flex items-center justify-between">
-              <h3 className="text-[11px] font-black uppercase text-slate-900 tracking-tight">რედაქტირება ({editingRecord.id})</h3>
-              <button onClick={() => setIsEditRecordModalOpen(false)} className="text-slate-400 hover:text-slate-600 transition-colors"><Icons.X /></button>
+              {editingRecord.cancelledCheck && (
+                <div className="space-y-4 pt-4 border-t border-slate-100">
+                   <p className="text-[10px] font-black text-rose-500 uppercase tracking-widest">გაუქმებული ჩეკის მონაცემები</p>
+                   <div className="grid grid-cols-2 gap-4">
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ჩეკის ნომერი</label>
+                        <input type="text" value={editingRecord.cancelledCheck.number} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...editingRecord.cancelledCheck!, number: e.target.value}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                      </div>
+                      <div className="space-y-1">
+                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">ჩეკის თანხა</label>
+                        <input type="number" value={editingRecord.cancelledCheck.amount} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...editingRecord.cancelledCheck!, amount: parseFloat(e.target.value) || 0}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-black outline-none focus:border-indigo-500" />
+                      </div>
+                   </div>
+                   <div className="space-y-1">
+                      <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest">მიზეზი</label>
+                      <textarea rows={2} value={editingRecord.cancelledCheck.reason} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...editingRecord.cancelledCheck!, reason: e.target.value}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-[12px] font-bold outline-none focus:border-indigo-500 resize-none" />
+                   </div>
+                </div>
+              )}
             </div>
-            <div className="p-8 space-y-6 max-h-[70vh] overflow-y-auto custom-scrollbar">
-               <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">თარიღი</label>
-                   <input type="date" value={editingRecord.date} onChange={e => setEditingRecord({...editingRecord, date: e.target.value})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                 </div>
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ფილიალი</label>
-                   <select value={editingRecord.branch} onChange={e => setEditingRecord({...editingRecord, branch: e.target.value})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600">
-                      {branches.map(b => <option key={b.name} value={b.name}>{b.name}</option>)}
-                   </select>
-                 </div>
-               </div>
-               <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">საწყისი ნაშთი (₾)</label>
-                   <input type="number" value={editingRecord.openingBalance} onChange={e => setEditingRecord({...editingRecord, openingBalance: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                 </div>
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ნაღდი ნავაჭრი (₾)</label>
-                   <input type="number" value={editingRecord.cash} onChange={e => setEditingRecord({...editingRecord, cash: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                 </div>
-               </div>
-               <div className="grid grid-cols-2 gap-4">
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ტერმინალი (₾)</label>
-                   <input type="number" value={editingRecord.terminal} onChange={e => setEditingRecord({...editingRecord, terminal: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                 </div>
-                 <div className="space-y-1.5">
-                   <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ინკასაცია (₾)</label>
-                   <input type="number" value={editingRecord.incasation} onChange={e => setEditingRecord({...editingRecord, incasation: parseFloat(e.target.value) || 0})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                 </div>
-               </div>
-               <div className="space-y-1.5">
-                 <label className="text-[9px] font-black text-indigo-600 uppercase tracking-widest block ml-1">საბოლოო ნაშთი (₾)</label>
-                 <input type="number" value={editingRecord.closingBalance} onChange={e => setEditingRecord({...editingRecord, closingBalance: parseFloat(e.target.value) || 0})} className="w-full bg-indigo-50 border border-indigo-100 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none" />
-               </div>
-
-               <div className="pt-4 border-t border-slate-100 space-y-4">
-                  <h4 className="text-[10px] font-black text-slate-900 uppercase tracking-widest">გაუქმებული ჩეკი</h4>
-                  <div className="grid grid-cols-2 gap-4">
-                     <div className="space-y-1.5">
-                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">ნომერი</label>
-                        <input type="text" value={editingRecord.cancelledCheck?.number || ''} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...(editingRecord.cancelledCheck || {amount: 0, reason: ''}), number: e.target.value}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                     </div>
-                     <div className="space-y-1.5">
-                        <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">თანხა</label>
-                        <input type="number" value={editingRecord.cancelledCheck?.amount || 0} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...(editingRecord.cancelledCheck || {number: '', reason: ''}), amount: parseFloat(e.target.value) || 0}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600" />
-                     </div>
-                  </div>
-                  <div className="space-y-1.5">
-                     <label className="text-[9px] font-black text-slate-400 uppercase tracking-widest block ml-1">მიზეზი</label>
-                     <textarea rows={2} value={editingRecord.cancelledCheck?.reason || ''} onChange={e => setEditingRecord({...editingRecord, cancelledCheck: {...(editingRecord.cancelledCheck || {number: '', amount: 0}), reason: e.target.value}})} className="w-full bg-slate-50 border border-slate-200 px-4 py-2.5 rounded-[5px] text-xs font-black outline-none focus:border-indigo-600 resize-none" />
-                  </div>
-               </div>
-            </div>
-            <div className="p-6 bg-slate-50 border-t border-slate-100 flex gap-3">
-               <button onClick={() => setIsEditRecordModalOpen(false)} className="flex-1 py-3 bg-white border border-slate-200 rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-50 transition-colors">გაუქმება</button>
-               <button onClick={handleSaveEditedRecord} className="flex-2 py-3 bg-slate-900 text-white rounded-[5px] text-[10px] font-black uppercase tracking-widest hover:bg-slate-800 transition-all flex items-center justify-center gap-2 shadow-lg">
-                 <Icons.Check /> შენახვა
-               </button>
+            <div className="p-8 bg-slate-50 flex gap-2">
+              <button onClick={() => setEditingRecord(null)} className="flex-1 py-3 bg-white border border-slate-200 rounded-[5px] text-[10px] font-black uppercase hover:bg-slate-100 transition-colors">გაუქმება</button>
+              <button onClick={handleSaveEdit} className="flex-1 py-3 bg-indigo-600 text-white rounded-[5px] text-[10px] font-black uppercase hover:bg-indigo-700 transition-colors">შენახვა</button>
             </div>
           </div>
         </div>

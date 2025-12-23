@@ -3,7 +3,6 @@ import React, { useRef, useState, useEffect } from 'react';
 import { User } from '../types';
 import { Icons } from '../constants';
 import { SystemSettings } from '../services/database';
-import { AuthService } from '../services/authService';
 
 interface ProfileModuleProps {
   user: User;
@@ -85,50 +84,24 @@ const ProfileModule: React.FC<ProfileModuleProps> = ({
       return;
     }
 
-    if (newPassword && newPassword.length < 6) {
-      alert('პაროლი უნდა იყოს მინიმუმ 6 სიმბოლო');
-      return;
-    }
-
     setIsSaving(true);
     
-    try {
-      if (formData.birthday !== user.birthday && formData.birthday) {
-        await onBirthdayChange(formData.birthday);
-      }
-
-      // If user provided a new password, update it in Firebase Auth first
-      if (newPassword) {
-        try {
-          await AuthService.updateUserPassword(newPassword);
-        } catch (authErr: any) {
-          if (authErr.code === 'auth/requires-recent-login') {
-            alert('პაროლის შესაცვლელად საჭიროა თავიდან ავტორიზაცია (უსაფრთხოების მიზნით). გთხოვთ გამოხვიდეთ და თავიდან შეხვიდეთ.');
-            setIsSaving(false);
-            return;
-          }
-          throw authErr;
-        }
-      }
-
-      const updates: Partial<User> = { ...formData };
-      // Note: We still save the password to the user doc for certain legacy flows 
-      // but AuthService.updateUserPassword is what controls the actual login
-      if (newPassword) {
-        updates.password = newPassword;
-      }
-      
-      await onUpdateUser(updates);
-      
-      setSaveSuccess(true);
-      setNewPassword('');
-      setConfirmPassword('');
-      setTimeout(() => setSaveSuccess(false), 3000);
-    } catch (err: any) {
-      alert('შეცდომა შენახვისას: ' + (err.message || 'ტექნიკური ხარვეზი'));
-    } finally {
-      setIsSaving(false);
+    if (formData.birthday !== user.birthday && formData.birthday) {
+      await onBirthdayChange(formData.birthday);
     }
+
+    const updates: Partial<User> = { ...formData };
+    if (newPassword) {
+      updates.password = newPassword;
+    }
+    
+    await onUpdateUser(updates);
+    
+    setIsSaving(false);
+    setSaveSuccess(true);
+    setNewPassword('');
+    setConfirmPassword('');
+    setTimeout(() => setSaveSuccess(false), 3000);
   };
 
   const inputClasses = "w-full px-5 py-4 bg-slate-50 border border-slate-200 rounded-[5px] font-bold text-sm text-slate-700 focus:bg-white focus:border-indigo-600 outline-none transition-all shadow-sm";

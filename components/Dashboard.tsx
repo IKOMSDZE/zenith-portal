@@ -1,19 +1,13 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { User, View, AttendanceRecord, BranchConfig, NewsItem, VacationRecord } from '../types';
+import { User, View, AttendanceRecord, BranchConfig } from '../types';
 import { Icons } from '../constants';
-import { Database } from '../services/database';
-import { where, orderBy, limit } from 'firebase/firestore';
-import NewsFeed from './NewsFeed';
-
-const Skeleton: React.FC<{ className?: string }> = ({ className }) => (
-  <div className={`animate-pulse bg-slate-200 rounded-[5px] ${className}`}></div>
-);
 
 interface DashboardProps {
   user: User;
+  employees: User[];
   onUpdateUser: (updates: Partial<User>) => void;
-  onAddRecord: (record: AttendanceRecord) => Promise<void>;
+  onAddRecord: (record: AttendanceRecord) => void;
   isAttendanceEnabled: boolean;
   branches: BranchConfig[];
   setActiveView: (view: View) => void;
@@ -22,18 +16,15 @@ interface DashboardProps {
 
 const Dashboard: React.FC<DashboardProps> = ({
   user,
+  employees,
   onUpdateUser,
   onAddRecord,
   isAttendanceEnabled,
   branches,
-  setActiveView
+  setActiveView,
+  attendanceLogs
 }) => {
   const [currentTime, setCurrentTime] = useState(new Date());
-  const [recentLogs, setRecentLogs] = useState<AttendanceRecord[] | null>(null);
-  const [news, setNews] = useState<NewsItem[]>([]);
-  const [upcomingBirthdays, setUpcomingBirthdays] = useState<User[]>([]);
-  const [upcomingVacations, setUpcomingVacations] = useState<VacationRecord[]>([]);
-  const [isLoadingAction, setIsLoadingAction] = useState(false);
 
   useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 1000);
@@ -45,147 +36,116 @@ const Dashboard: React.FC<DashboardProps> = ({
     [currentTime]
   );
 
-  const fetchDashboardData = async () => {
-    // 1. Fetch Attendance if enabled
-    if (isAttendanceEnabled) {
-      const res = await Database.getAttendanceLogs([
-        where('employeeId', '==', user.id),
-        orderBy('date', 'desc'),
-        limit(5)
-      ]);
-      setRecentLogs(res.data);
-    }
+  const hasCheckedInToday = useMemo(() => {
+    return attendanceLogs.some(log => log.date === todayDateStr && log.employeeId === user.id);
+  }, [attendanceLogs, user.id, todayDateStr]);
 
-    // 2. Fetch News
-    Database.getNews(10).then(setNews);
-
-    // 3. Fetch Birthdays (Logic: Next 14 days)
-    const empRes = await Database.getEmployees(100); // Fetch a reasonable batch
+  // Logic for upcoming birthdays (exactly next 14 days)
+  const upcomingBirthdays = useMemo(() => {
     const now = new Date();
-    const rangeEnd = new Date();
-    rangeEnd.setDate(now.getDate() + 14);
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const fourteenDaysLater = new Date(today);
+    fourteenDaysLater.setDate(today.getDate() + 14);
 
-    const bdays = empRes.data.filter(emp => {
-      if (!emp.birthday) return false;
-      const bday = new Date(emp.birthday);
-      const nextBday = new Date(now.getFullYear(), bday.getMonth(), bday.getDate());
-      if (nextBday < new Date(now.getFullYear(), now.getMonth(), now.getDate())) {
-        nextBday.setFullYear(now.getFullYear() + 1);
-      }
-      return nextBday >= new Date(now.getFullYear(), now.getMonth(), now.getDate()) && nextBday <= rangeEnd;
-    }).sort((a, b) => {
-      const getNext = (d: string) => {
-        const bd = new Date(d);
-        const nbd = new Date(now.getFullYear(), bd.getMonth(), bd.getDate());
-        if (nbd < new Date(now.getFullYear(), now.getMonth(), now.getDate())) nbd.setFullYear(now.getFullYear() + 1);
-        return nbd.getTime();
-      };
-      return getNext(a.birthday!) - getNext(b.birthday!);
-    });
-    setUpcomingBirthdays(bdays);
+    return employees
+      .filter(emp => emp.birthday)
+      .map(emp => {
+        const [year, month, day] = emp.birthday!.split('-').map(Number);
+        const bdayThisYear = new Date(today.getFullYear(), month - 1, day);
+        if (bdayThisYear < today) {
+          bdayThisYear.setFullYear(today.getFullYear() + 1);
+        }
+        return { ...emp, nextBday: bdayThisYear };
+      })
+      .filter(emp => emp.nextBday >= today && emp.nextBday <= fourteenDaysLater)
+      .sort((a, b) => a.nextBday.getTime() - b.nextBday.getTime());
+  }, [employees]);
 
-    // 4. Fetch Vacations (Active or upcoming)
-    const todayISO = now.toISOString().split('T')[0];
-    const vacs = await Database.getVacations([
-      where('status', '==', 'Approved'),
-      where('endDate', '>=', todayISO),
-      limit(5)
-    ]);
-    setUpcomingVacations(vacs);
-  };
+  const last3Activities = useMemo(() => {
+    return attendanceLogs
+      .filter(log => log.employeeId === user.id)
+      .sort((a, b) => {
+        const dateA = new Date(a.date).getTime();
+        const dateB = new Date(b.date).getTime();
+        return dateB - dateA;
+      })
+      .slice(0, 3);
+  }, [attendanceLogs, user.id]);
 
-  useEffect(() => {
-    fetchDashboardData();
-  }, [user.id, isAttendanceEnabled]);
-
-  const activeRecord = useMemo(() => {
-    if (!recentLogs) return null;
-    return recentLogs.find(log => log.date === todayDateStr && log.status === 'Active');
-  }, [recentLogs, todayDateStr]);
-
-  const hasCompletedToday = useMemo(() => {
-    if (!recentLogs) return false;
-    return recentLogs.some(log => log.date === todayDateStr && log.status === 'Complete');
-  }, [recentLogs, todayDateStr]);
-
-  const handleAttendanceAction = async () => {
-    if (!user.branch || !isAttendanceEnabled || !user.uid || isLoadingAction) return;
-    setIsLoadingAction(true);
+  const handleArrive = async () => {
+    if (hasCheckedInToday || !user.branch || !isAttendanceEnabled) return;
     
     const now = new Date();
-    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
-
-    try {
-      if (activeRecord) {
-        const updatedRecord: AttendanceRecord = {
-          ...activeRecord,
-          checkOut: timeStr,
-          status: 'Complete'
-        };
-        await Database.saveAttendanceLog(updatedRecord);
-        await onUpdateUser({ checkedIn: false });
-        await fetchDashboardData();
-      } else {
-        if (hasCompletedToday) {
-           alert("თქვენ უკვე დაასრულეთ სამუშაო დღე.");
-           setIsLoadingAction(false);
-           return;
-        }
-
-        const branchConfig = branches.find(b => b.name === user.branch);
-        let isLate = false;
-        if (branchConfig) {
-          const [openH, openM] = branchConfig.openTime.split(':').map(Number);
-          const openDate = new Date(now);
-          openDate.setHours(openH, openM, 0, 0);
-          isLate = (now.getTime() - openDate.getTime()) / (1000 * 60) > branchConfig.lateThreshold;
-        }
-
-        const newRecord: AttendanceRecord = {
-          id: `ATT-${Date.now()}-${user.id}`,
-          employeeId: user.id,
-          uid: user.uid,
-          employeeName: user.name,
-          employeeRole: user.role,
-          department: user.department,
-          date: todayDateStr,
-          checkIn: timeStr,
-          status: 'Active',
-          branch: user.branch,
-          isLate
-        };
-        
-        await onAddRecord(newRecord);
-        await onUpdateUser({ checkedIn: true, lastCheckIn: timeStr });
-        await fetchDashboardData();
-      }
-    } catch (e) {
-      console.error(e);
-      alert("შეცდომა ოპერაციისას.");
-    } finally {
-      setIsLoadingAction(false);
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    
+    const branchConfig = branches.find(b => b.name === user.branch);
+    let isLate = false;
+    if (branchConfig) {
+      const [openH, openM] = branchConfig.openTime.split(':').map(Number);
+      const openDate = new Date(now);
+      openDate.setHours(openH, openM, 0, 0);
+      isLate = (now.getTime() - openDate.getTime()) / (1000 * 60) > branchConfig.lateThreshold;
     }
+
+    const newRecord: AttendanceRecord = {
+      id: Math.random().toString(36).substr(2, 9),
+      employeeId: user.id,
+      employeeName: user.name,
+      date: todayDateStr,
+      checkIn: timeStr,
+      status: 'Complete',
+      branch: user.branch,
+      isLate
+    };
+    await onAddRecord(newRecord);
+    await onUpdateUser({ checkedIn: true, lastCheckIn: timeStr });
   };
 
+  const remainingVacation = user.vacationDaysTotal - user.vacationDaysUsed;
+
+  const tenureInfo = useMemo(() => {
+    if (!user.jobStartDate) return null;
+    const start = new Date(user.jobStartDate);
+    const now = new Date();
+    const diffTime = Math.abs(now.getTime() - start.getTime());
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays < 365) return `${diffDays} დღე გუნდში`;
+    const years = (diffDays / 365).toFixed(1);
+    return `${years} წელი გუნდში`;
+  }, [user.jobStartDate]);
+
   return (
-    <div className="space-y-8 animate-in fade-in duration-700 pb-24">
-      {/* Welcome Hero */}
-      <div className="relative bg-slate-900 text-white rounded-[5px] p-8 md:p-12 overflow-hidden shadow-2xl">
-        <div className="absolute top-0 right-0 w-1/2 h-full bg-gradient-to-l from-indigo-600/20 to-transparent"></div>
-        <div className="relative z-10 flex flex-col md:flex-row justify-between items-center gap-10">
-          <div className="flex items-center gap-8">
-             <div className="w-20 h-20 rounded-[5px] p-1 bg-white/10 border border-white/20 backdrop-blur-md">
+    <div className="space-y-8 animate-in fade-in duration-700 pb-20">
+      {/* Welcome & Time Header - Light Version */}
+      <div className="relative bg-white border border-slate-200 rounded-[5px] p-8 md:p-12 overflow-hidden shadow-sm">
+        <div className="absolute -right-20 -bottom-20 w-80 h-80 bg-indigo-50 rounded-full blur-[100px] opacity-40"></div>
+        <div className="absolute top-0 left-0 w-1.5 h-full bg-indigo-600"></div>
+        
+        <div className="relative z-10 flex flex-col md:flex-row justify-between items-center gap-8">
+          <div className="flex items-center gap-6">
+             <div className="w-20 h-20 rounded-[5px] p-1 bg-slate-50 border border-slate-200">
                 <img src={user.avatar} className="w-full h-full object-cover rounded-[3px]" alt="Avatar" />
              </div>
              <div>
-                <p className="text-indigo-400 text-[11px] font-black uppercase tracking-[0.4em] mb-1">მოგესალმებით,</p>
-                <h1 className="text-3xl md:text-4xl font-black tracking-tight leading-none">{user.name}</h1>
-                <p className="text-slate-400 text-[9px] font-bold uppercase tracking-widest mt-2">{user.position} • {user.department}</p>
+                <p className="text-indigo-600 text-[10px] font-black uppercase tracking-[0.3em] mb-1">მოგესალმებით,</p>
+                <h1 className="text-3xl md:text-4xl font-black text-slate-900 tracking-tight leading-none">{user.name}!</h1>
+                <div className="flex flex-wrap items-center gap-3 mt-3">
+                  <p className="text-slate-500 text-[10px] font-bold uppercase tracking-widest flex items-center gap-2">
+                     <Icons.User /> {user.position} • {user.department}
+                  </p>
+                  {tenureInfo && (
+                    <span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-[3px] text-[8px] font-black uppercase tracking-widest border border-indigo-100">
+                      {tenureInfo}
+                    </span>
+                  )}
+                </div>
              </div>
           </div>
-          <div className="text-center md:text-right space-y-1 bg-white/5 p-4 rounded-[5px] border border-white/10 backdrop-blur-sm min-w-[180px]">
-             <p className="text-[10px] font-black text-indigo-300 uppercase tracking-widest mb-1">{todayDateStr}</p>
-             <p className="text-5xl font-black tabular-nums tracking-tighter leading-none">
+
+          <div className="text-center md:text-right space-y-1">
+             <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">{todayDateStr}</p>
+             <p className="text-5xl font-black tabular-nums tracking-tighter text-slate-900">
                {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })}
              </p>
           </div>
@@ -193,153 +153,149 @@ const Dashboard: React.FC<DashboardProps> = ({
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        {/* Main Content Area */}
         <div className="lg:col-span-8 space-y-8">
-          {/* Main Attendance Module */}
+          
+          {/* Conditional Attendance Section */}
           {isAttendanceEnabled && (
-            <div className="bg-white rounded-[5px] p-10 border border-slate-200 shadow-sm relative overflow-hidden">
-              <div className="flex flex-col md:flex-row items-center justify-between gap-8">
-                <div className="space-y-4 flex-1 text-center md:text-left">
-                  <h3 className="text-xl font-black text-slate-900 uppercase tracking-widest">დღიური აქტივობა</h3>
-                  <div className="flex flex-col gap-2">
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-widest">ფილიალი: <span className="text-indigo-600 font-black">{user.branch || 'არჩეული არ არის'}</span></p>
-                    {activeRecord && <p className="text-[10px] text-emerald-600 font-black uppercase tracking-widest flex items-center gap-2"><Icons.Check /> მუშაობის პროცესშია ({activeRecord.checkIn})</p>}
+            <div className="bg-white rounded-[5px] p-10 md:p-14 border border-slate-200 shadow-sm relative group overflow-hidden">
+              <div className="absolute top-0 right-0 w-48 h-48 bg-indigo-50 rounded-bl-full -mr-20 -mt-20 transition-transform group-hover:scale-110"></div>
+              
+              <div className="relative z-10 flex flex-col md:flex-row items-center justify-between gap-12">
+                <div className="space-y-8 text-center md:text-left flex-1">
+                  <div>
+                    <h3 className="text-2xl font-black text-slate-900 uppercase tracking-widest mb-2">სამუშაო სტატუსი</h3>
+                    <p className="text-sm text-slate-400 font-bold uppercase">თქვენი ლოკაცია: <span className="text-indigo-600 font-black underline decoration-2 underline-offset-4">{user.branch || 'არჩეული არ არის'}</span></p>
                   </div>
+
+                  {hasCheckedInToday ? (
+                    <div className="inline-flex items-center gap-8 text-emerald-600 bg-emerald-50/50 px-12 py-8 rounded-[5px] border border-emerald-100 shadow-sm">
+                      <div className="w-16 h-16 rounded-full bg-emerald-100 flex items-center justify-center text-3xl">
+                        <Icons.Check />
+                      </div>
+                      <div>
+                        <p className="text-[11px] font-black uppercase opacity-60 mb-1 tracking-widest">მოსვლა დაფიქსირდა</p>
+                        <p className="text-4xl font-black tabular-nums leading-none tracking-tight">{user.lastCheckIn}</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <button 
+                      onClick={handleArrive}
+                      disabled={!user.branch}
+                      className="w-full md:w-auto px-20 py-10 bg-slate-900 text-white rounded-[5px] font-black text-2xl uppercase tracking-[0.2em] hover:bg-indigo-600 transition-all shadow-2xl active:scale-95 flex items-center justify-center gap-8 disabled:opacity-50 group/btn"
+                    >
+                      <div className="group-hover/btn:rotate-12 transition-transform duration-300 scale-125">
+                        <Icons.Clock />
+                      </div>
+                      დროის დაფიქსირება
+                    </button>
+                  )}
                 </div>
 
-                <button 
-                  onClick={handleAttendanceAction}
-                  disabled={!user.branch || hasCompletedToday || isLoadingAction}
-                  className={`px-12 py-6 rounded-[5px] font-black text-sm uppercase tracking-[0.2em] transition-all shadow-xl active:scale-95 flex items-center justify-center gap-4 disabled:opacity-50 ${
-                    activeRecord 
-                      ? 'bg-rose-500 text-white hover:bg-rose-600' 
-                      : hasCompletedToday 
-                        ? 'bg-emerald-50 text-emerald-500 border border-emerald-100 cursor-not-allowed'
-                        : 'bg-slate-900 text-white hover:bg-indigo-600'
-                  }`}
-                >
-                  {isLoadingAction ? (
-                    <div className="w-5 h-5 border-2 border-white/20 border-t-white rounded-full animate-spin"></div>
-                  ) : activeRecord ? (
-                    <><Icons.X /> სამუშაოს დასრულება</>
-                  ) : hasCompletedToday ? (
-                    <><Icons.Check /> დასრულებულია</>
-                  ) : (
-                    <><Icons.Clock /> მუშაობის დაწყება</>
-                  )}
-                </button>
+                <div className="hidden md:flex flex-col items-center gap-4 px-12 border-l border-slate-100">
+                   <div className="w-40 h-40 bg-slate-50 rounded-full border-4 border-slate-100 flex items-center justify-center text-slate-200 shadow-inner">
+                      <div className="scale-[2.5]"><Icons.Dashboard /></div>
+                   </div>
+                   <p className="text-[10px] font-black text-slate-300 uppercase tracking-[0.2em]">BH Systems</p>
+                </div>
               </div>
             </div>
           )}
 
-          {/* Attendance History List - ONLY if enabled */}
+          {/* Last 3 Activities Section */}
           {isAttendanceEnabled && (
             <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-              <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-                <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
-                  <Icons.Clock /> ბოლო ჩანაწერები
-                </h3>
-              </div>
-              <div className="overflow-x-auto">
-                 <table className="w-full text-left">
-                   <thead>
-                      <tr className="bg-slate-50 text-[9px] font-black uppercase text-slate-400 tracking-widest border-b border-slate-100">
-                        <th className="px-8 py-4">თარიღი</th>
-                        <th className="px-8 py-4">მოსვლა</th>
-                        <th className="px-8 py-4">წასვლა</th>
-                        <th className="px-8 py-4 text-right">სტატუსი</th>
-                      </tr>
-                   </thead>
-                   <tbody className="divide-y divide-slate-50">
-                     {recentLogs === null ? (
-                       [1, 2].map(i => <tr key={i}><td colSpan={4} className="p-6"><Skeleton className="h-4 w-full" /></td></tr>)
-                     ) : recentLogs.length > 0 ? (
-                       recentLogs.map(log => (
-                         <tr key={log.id} className="hover:bg-slate-50 transition-colors">
-                           <td className="px-8 py-5 text-[11px] font-black text-slate-900 uppercase">{log.date}</td>
-                           <td className="px-8 py-5 text-[10px] font-black text-indigo-600">{log.checkIn}</td>
-                           <td className="px-8 py-5 text-[10px] font-black text-slate-400">{log.checkOut || '—'}</td>
-                           <td className="px-8 py-5 text-right">
-                             <span className={`px-4 py-1 rounded-[3px] font-black text-[9px] uppercase tracking-widest ${log.status === 'Active' ? 'bg-amber-50 text-amber-600' : 'bg-emerald-50 text-emerald-500'}`}>
-                               {log.status === 'Active' ? 'აქტიური' : 'დასრულებული'}
-                             </span>
-                           </td>
-                         </tr>
-                       ))
-                     ) : (
-                      <tr>
-                        <td colSpan={4} className="px-8 py-10 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic">აქტივობა არ ფიქსირდება</td>
-                      </tr>
-                     )}
-                   </tbody>
-                 </table>
-              </div>
+               <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
+                  <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
+                    <Icons.Clock /> ბოლო 3 აქტივობა
+                  </h3>
+                  <button onClick={() => setActiveView(View.ATTENDANCE_REPORT)} className="text-[10px] font-black text-indigo-600 uppercase hover:underline tracking-widest">ყველას ნახვა</button>
+               </div>
+               <div className="divide-y divide-slate-100">
+                  {last3Activities.map(log => (
+                    <div key={log.id} className="p-6 flex items-center justify-between hover:bg-slate-50 transition-colors">
+                       <div className="flex items-center gap-5">
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center ${log.isLate ? 'bg-rose-50 text-rose-500 border border-rose-100' : 'bg-emerald-50 text-emerald-600 border border-emerald-100'}`}>
+                             <Icons.Check />
+                          </div>
+                          <div>
+                             <p className="text-sm font-black text-slate-900 uppercase leading-none tracking-tight">{log.date}</p>
+                             <p className="text-[10px] font-bold text-slate-400 uppercase mt-1.5">{log.branch}</p>
+                          </div>
+                       </div>
+                       <div className="text-right">
+                          <p className="text-lg font-black text-slate-800 tabular-nums leading-none tracking-tight">{log.checkIn}</p>
+                          {log.isLate && <span className="text-[9px] font-black text-rose-500 uppercase tracking-widest mt-1 block">დაგვიანება</span>}
+                       </div>
+                    </div>
+                  ))}
+                  {last3Activities.length === 0 && (
+                    <div className="p-16 text-center text-slate-300 italic text-[11px] font-black uppercase tracking-[0.3em]">აქტივობა არ ფიქსირდება</div>
+                  )}
+               </div>
             </div>
           )}
 
-          {/* Upcoming Vacations */}
+          {/* Upcoming Birthdays (Next 14 Days) */}
           <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between">
-              <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
-                <Icons.Calendar /> მიმდინარე და დაგეგმილი შვებულებები
-              </h3>
-              <button onClick={() => setActiveView(View.VACATIONS)} className="text-[9px] font-black text-indigo-600 uppercase hover:underline">ყველას ნახვა</button>
-            </div>
-            <div className="divide-y divide-slate-100">
-               {upcomingVacations.map(vac => (
-                 <div key={vac.id} className="p-6 flex items-center justify-between hover:bg-slate-50 transition-colors">
-                    <div className="flex items-center gap-4">
-                       <div className="w-8 h-8 rounded-full bg-indigo-50 flex items-center justify-center text-indigo-600"><Icons.User /></div>
-                       <div>
-                          <p className="text-[11px] font-black text-slate-900 uppercase">{vac.employeeName}</p>
-                          <p className="text-[9px] text-slate-400 font-bold uppercase">{vac.startDate} — {vac.endDate}</p>
-                       </div>
-                    </div>
-                    <span className="text-[8px] font-black px-2 py-0.5 bg-slate-100 text-slate-500 rounded uppercase tracking-widest">{vac.reason}</span>
-                 </div>
-               ))}
-               {upcomingVacations.length === 0 && (
-                 <div className="p-10 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic">შვებულებები არ ფიქსირდება</div>
-               )}
-            </div>
+             <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/50">
+                <h3 className="text-[11px] font-black text-slate-900 uppercase tracking-widest flex items-center gap-3">
+                  <Icons.Gift /> მოახლოებული დაბადების დღეები (14 დღე)
+                </h3>
+             </div>
+             <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+                {upcomingBirthdays.map(emp => (
+                  <div key={emp.id} className="p-8 flex flex-col items-center text-center space-y-4 group hover:bg-slate-50 transition-all">
+                     <div className="w-16 h-16 rounded-full border-2 border-indigo-100 p-0.5 group-hover:border-indigo-400 transition-colors shadow-md">
+                        <img src={emp.avatar} className="w-full h-full object-cover rounded-full" />
+                     </div>
+                     <div className="space-y-1">
+                        <p className="text-[12px] font-black text-slate-900 uppercase leading-tight tracking-tight">{emp.name}</p>
+                        <p className="text-[10px] font-bold text-indigo-600 uppercase tracking-widest">
+                           {emp.nextBday.toLocaleDateString('ka-GE', { day: 'numeric', month: 'long' })}
+                        </p>
+                     </div>
+                  </div>
+                ))}
+                {upcomingBirthdays.length === 0 && (
+                  <div className="col-span-3 p-16 text-center text-slate-300 italic text-[11px] font-black uppercase tracking-[0.3em]">ამ პერიოდში დაბადების დღეები არ არის</div>
+                )}
+             </div>
           </div>
         </div>
 
+        {/* Sidebar Widgets */}
         <div className="lg:col-span-4 space-y-8">
-          {/* Birthdays Section */}
-          <div className="bg-white rounded-[5px] border border-slate-200 shadow-sm overflow-hidden">
-            <div className="px-8 py-5 border-b border-slate-100 bg-slate-900 text-white flex items-center justify-between">
-              <h3 className="text-[10px] font-black uppercase tracking-widest flex items-center gap-3">
-                <Icons.Gift /> დაბადების დღეები
-              </h3>
-              <span className="text-[8px] font-bold text-white/50 uppercase">შემდეგი 14 დღე</span>
-            </div>
-            <div className="divide-y divide-slate-50">
-               {upcomingBirthdays.map(emp => {
-                 const bday = new Date(emp.birthday!);
-                 const displayDate = bday.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-                 return (
-                   <div key={emp.id} className="p-5 flex items-center gap-4 group">
-                      <img src={emp.avatar} className="w-10 h-10 rounded-[5px] object-cover group-hover:scale-105 transition-transform" />
-                      <div className="flex-1">
-                         <p className="text-[11px] font-black text-slate-900 uppercase">{emp.name}</p>
-                         <p className="text-[9px] text-indigo-500 font-black uppercase">{displayDate}</p>
-                      </div>
-                      <div className="text-slate-100 group-hover:text-indigo-600 transition-colors"><Icons.Gift /></div>
-                   </div>
-                 );
-               })}
-               {upcomingBirthdays.length === 0 && (
-                 <div className="p-12 text-center text-slate-300 font-black text-[9px] uppercase tracking-widest italic leading-relaxed">
-                   ახლო მომავალში დაბადების დღეები არ ფიქსირდება
-                 </div>
-               )}
-            </div>
-          </div>
+          {/* My Vacation Balance Card */}
+          <div 
+            onClick={() => setActiveView(View.VACATIONS)}
+            className="bg-indigo-600 rounded-[5px] p-10 text-white shadow-xl relative overflow-hidden group cursor-pointer hover:scale-[1.02] transition-all h-72 flex flex-col justify-between"
+          >
+             <div className="absolute -right-4 -bottom-4 text-white opacity-5 scale-[4.5] group-hover:rotate-12 transition-transform duration-700 pointer-events-none">
+                <Icons.Calendar />
+             </div>
+             
+             <div className="relative z-10 space-y-2">
+                <p className="text-indigo-100 text-[11px] font-black uppercase tracking-[0.2em] opacity-80">ჩემი შვებულება</p>
+                <h4 className="text-7xl font-black tabular-nums tracking-tighter leading-none">{remainingVacation}</h4>
+                <p className="text-[11px] font-black text-indigo-300 uppercase tracking-widest mt-2">დარჩენილი დღეები</p>
+             </div>
 
-          {/* Integrated News Feed */}
-          <div className="h-fit">
-            <NewsFeed news={news} />
+             <div className="relative z-10 w-full space-y-4">
+                <div className="flex justify-between items-end text-[10px] font-black uppercase tracking-widest">
+                   <span className="text-indigo-200">ათვისებული: {user.vacationDaysUsed}</span>
+                   <span className="text-white">ჯამი: {user.vacationDaysTotal}</span>
+                </div>
+                <div className="h-2.5 w-full bg-white/20 rounded-full overflow-hidden backdrop-blur-md">
+                   <div 
+                    className="h-full bg-white shadow-[0_0_15px_rgba(255,255,255,0.5)] transition-all duration-1000 ease-out" 
+                    style={{ width: `${(remainingVacation / user.vacationDaysTotal) * 100}%` }}
+                   ></div>
+                </div>
+             </div>
           </div>
+          
+          {/* Quick Access was removed as per request */}
         </div>
       </div>
     </div>

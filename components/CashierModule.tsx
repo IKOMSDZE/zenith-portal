@@ -17,9 +17,8 @@ const CashierModule: React.FC<CashierModuleProps> = ({ user, onUpdateCashHistory
   useEffect(() => {
     if (user.branch) {
       Database.getBranchBalance(user.branch).then(setOpeningBalance);
-      // Fixed: history is now PaginatedResult, so use history.data
       Database.getCashHistory().then(history => {
-        const filtered = history.data
+        const filtered = history
           .filter(r => r.branch === user.branch)
           .slice(0, 3);
         setLastReports(filtered);

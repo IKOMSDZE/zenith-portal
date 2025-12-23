@@ -7,27 +7,14 @@ export interface BranchConfig {
 
 export interface AttendanceRecord {
   id: string;
-  employeeId: string;
-  uid: string; // Firebase Auth UID for Security Rules
-  employeeName: string;
-  employeeRole: UserRole; // Denormalized
-  department: string;    // Denormalized
-  branch: string;        // Denormalized
-  date: string;          // Format: "YYYY-MM-DD" for better sorting
+  employeeId?: string;
+  employeeName?: string;
+  date: string;
   checkIn: string;
   checkOut?: string;
   status: 'Complete' | 'Active';
-  isLate: boolean;
-}
-
-// New interface for instant reporting
-export interface BranchDailyStats {
-  id: string; // Format: "branchName_YYYY-MM-DD"
-  branch: string;
-  date: string;
-  totalPresent: number;
-  totalLate: number;
-  totalOnTime: number;
+  branch?: string;
+  isLate?: boolean;
 }
 
 export type UserRole = 'Admin' | 'Manager' | 'Editor' | 'Accountant' | 'Employee' | 'HR';
@@ -42,7 +29,6 @@ export interface PositionMapping {
 export interface VacationRecord {
   id: string;
   employeeId: string;
-  uid: string;
   employeeName: string;
   startDate: string;
   endDate: string;
@@ -73,6 +59,7 @@ export interface CashDeskRecord {
   };
 }
 
+// Added NewsItem interface to fix import error in components/NewsFeed.tsx
 export interface NewsItem {
   id: string;
   type: 'Success' | 'Alert' | 'Info';
@@ -104,8 +91,6 @@ export interface User {
   personalId?: string;
   address?: string;
   password?: string;
-  // Locally calculated next birthday for dashboard display
-  nextBday?: Date;
 }
 
 export enum View {
